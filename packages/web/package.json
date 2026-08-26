@@ -1,0 +1,30 @@
+{
+  "name": "@pichamber/web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.ts",
+  "scripts": {
+    "type-check": "tsc --noEmit",
+    "lint": "oxlint src",
+    "test": "bun test",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "@pichamber/agent": "workspace:*",
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "node-pty": "^1.1.0",
+    "ws": "^8.21.3"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.2.0",
+    "@types/cors": "^2.8.17",
+    "@types/express": "^5.0.0",
+    "@types/node": "^24.0.0",
+    "@types/ws": "^8.18.1",
+    "oxlint": "^1.78.0",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.0"
+  }
+}

@@ -1,0 +1,20 @@
+# Trellis workflow data (local-only: spec, tasks, runtime state, journals)
+.trellis/
+
+# Local pi agent + skills directories
+.pi/
+.agents/
+
+# Agent instructions (local-only)
+AGENTS.md
+
+# Dependencies & build output
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+.pi-subagents/

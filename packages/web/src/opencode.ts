@@ -1,0 +1,598 @@
+/**
+ * opencode-compatible HTTP + SSE server, backed by SessionRegistry.
+ * The vendored openchamber UI talks to these routes via @opencode-ai/sdk
+ * (baseUrl `/api`, so routes mount under `/api`).
+ *
+ * Response shapes mirror @opencode-ai/sdk: endpoints return data directly
+ * (Array<Session>, Session, Array<{info,parts}>, {id:SessionStatus}), and
+ * prompt/abort return 204 (no body).
+ */
+
+import { Router } from "express";
+import type { Request, Response } from "express";
+import type { Express } from "express";
+import fs from "node:fs";
+import path from "node:path";
+import type {
+	Session,
+	SessionHandle,
+	SessionRegistry,
+	SessionRuntime,
+	StoreChange,
+} from "@pichamber/agent";
+import { listModelProviders } from "@pichamber/agent";
+
+interface OpencodeEvent {
+	id: string;
+	type: string;
+	properties: Record<string, unknown>;
+}
+
+let eventSeq = 0;
+function nextEventId(): string {
+	eventSeq += 1;
+	return `evt-${eventSeq}`;
+}
+
+/**
+ * Global panel-event bus. Store-derived events flow through each SSE
+ * connection's registry subscription, but panel state (git branch, lsp, mcp)
+ * lives in the web layer and needs a way to fan out to every open /event
+ * stream. subscribePanelEvents is called once per SSE connection.
+ */
+const panelListeners = new Set<(event: OpencodeEvent) => void>();
+export function broadcastPanelEvent(
+	type: string,
+	properties: Record<string, unknown>,
+): void {
+	const event: OpencodeEvent = { id: nextEventId(), type, properties };
+	for (const l of panelListeners) l(event);
+}
+export function subscribePanelEvents(
+	listener: (event: OpencodeEvent) => void,
+): () => void {
+	panelListeners.add(listener);
+	return () => {
+		panelListeners.delete(listener);
+	};
+}
+
+/** Map a SessionStore mutation to an opencode SSE event (or null if unmapped). */
+export function toOpencodeEvent(
+	change: StoreChange,
+	session: Session,
+): OpencodeEvent | null {
+	switch (change.type) {
+		case "session_updated":
+			return {
+				id: nextEventId(),
+				type: "session.updated",
+				properties: { sessionID: session.id, info: session },
+			};
+		case "message_added":
+		case "message_updated":
+			return {
+				id: nextEventId(),
+				type: "message.updated",
+				properties: { sessionID: session.id, info: change.message },
+			};
+		case "part_added":
+		case "part_updated":
+			return {
+				id: nextEventId(),
+				type: "message.part.updated",
+				properties: {
+					sessionID: session.id,
+					part: change.part,
+					time: Date.now(),
+				},
+			};
+		case "part_delta":
+			return {
+				id: nextEventId(),
+				type: "message.part.delta",
+				properties: {
+					sessionID: session.id,
+					messageID: change.messageID,
+					partID: change.partID,
+					field: change.field,
+					delta: change.delta,
+				},
+			};
+		case "status":
+			if (change.status === "busy") {
+				return {
+					id: nextEventId(),
+					type: "session.status",
+					properties: { sessionID: session.id, status: { type: "busy" } },
+				};
+			}
+			if (change.status === "idle") {
+				return {
+					id: nextEventId(),
+					type: "session.idle",
+					properties: { sessionID: session.id },
+				};
+			}
+			return {
+				id: nextEventId(),
+				type: "session.error",
+				properties: { sessionID: session.id },
+			};
+		case "todo_updated":
+			return {
+				id: nextEventId(),
+				type: "todo.updated",
+				properties: { sessionID: session.id, todos: change.todos },
+			};
+	}
+}
+
+function toOpencodeSession(h: SessionHandle): Session {
+	return {
+		id: h.id,
+		slug: h.id,
+		projectID: "default",
+		directory: h.directory,
+		title: h.title,
+		version: "0",
+		tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+		time: { created: h.createdAt, updated: h.updatedAt },
+	};
+}
+
+const SETTINGS_PATH = path.join(
+	process.env.HOME ?? "/root",
+	".config",
+	"openchamber",
+	"settings.json",
+);
+
+function readSettings(): Record<string, unknown> {
+	try {
+		return JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8")) as Record<string, unknown>;
+	} catch {
+		return {};
+	}
+}
+
+function writeSettings(settings: Record<string, unknown>): void {
+	fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
+	fs.writeFileSync(SETTINGS_PATH, JSON.stringify(settings, null, 2));
+}
+
+function withProject(s: Session): Session {
+	return {
+		...s,
+		project: { id: "project-1", name: "pichamber", worktree: s.directory },
+	} as Session;
+}
+
+export function createOpencodeRoutes(
+	app: Express,
+	registry: SessionRegistry,
+): void {
+	const router = Router();
+
+	// Filesystem browsing is confined to the home directory: the UI reads
+	// workspace + config files under $HOME, but must not reach system paths
+	// (/etc, /var, …). This keeps the directory picker working while closing
+	// the arbitrary-file-read (LFI) hole for non-browser clients.
+	const home = path.resolve(process.env.HOME ?? "/root");
+	const isWithinHome = (p: string): boolean => {
+		const resolved = path.resolve(p);
+		return resolved === home || resolved.startsWith(home + path.sep);
+	};
+	// Never expose credential/material paths, even though they live under HOME.
+	const isSensitivePath = (p: string): boolean =>
+		/(^|\/)(\.ssh|\.aws|\.docker|\.kube|\.config\/gh|\.gnupg)(\/|$)/.test(p) ||
+		/(^|\/)(\.env(\.\w+)?|\.git-credentials|\.netrc|\.gitconfig|id_rsa|id_ed25519)(\/|$)/.test(p);
+
+	const getRuntime = async (id: string): Promise<SessionRuntime | null> => {
+		const existing = registry.get(id);
+		if (existing) return existing;
+		return registry.open(id);
+	};
+
+	const paramId = (req: Request): string => {
+		const v = req.params["id"];
+		if (typeof v === "string") return v;
+		if (Array.isArray(v)) return v[0] ?? "";
+		return "";
+	};
+
+	// --- session routes ---
+
+	router.get("/session", async (_req, res: Response) => {
+		const handles = await registry.list();
+		res.json(handles.map((h) => withProject(toOpencodeSession(h))));
+	});
+
+	router.get("/experimental/session", async (_req, res: Response) => {
+		const handles = await registry.list();
+		res.json(handles.map((h) => withProject(toOpencodeSession(h))));
+	});
+
+	router.post("/session", async (_req, res: Response) => {
+		const rt = await registry.create();
+		res.status(201).json(withProject(rt.store.getSession()));
+	});
+
+	router.get("/session/status", (_req, res: Response) => {
+		const status: Record<string, { type: string }> = {};
+		for (const rt of registry.runtimesList()) {
+			status[rt.id] = { type: rt.store.getStatus() };
+		}
+		res.json(status);
+	});
+
+	router.get("/session/:id", async (req: Request, res: Response) => {
+		const rt = await getRuntime(paramId(req));
+		if (!rt) {
+			res.status(404).json({ error: "session not found" });
+			return;
+		}
+		res.json(withProject(rt.store.getSession()));
+	});
+
+	router.get("/session/:id/message", async (req: Request, res: Response) => {
+		const rt = await getRuntime(paramId(req));
+		if (!rt) {
+			res.status(404).json({ error: "session not found" });
+			return;
+		}
+		const records = rt.store.getMessages().map((info) => ({
+			info,
+			parts: rt.store.getParts(info.id),
+		}));
+		res.json(records);
+	});
+
+	router.get("/session/:id/todo", async (req: Request, res: Response) => {
+		const rt = await getRuntime(paramId(req));
+		if (!rt) {
+			res.status(404).json({ error: "session not found" });
+			return;
+		}
+		res.json(rt.store.getTodos());
+	});
+
+	const promptHandler = async (req: Request, res: Response) => {
+		const rt = await getRuntime(paramId(req));
+		if (!rt) {
+			res.status(404).json({ error: "session not found" });
+			return;
+		}
+		const parts = req.body?.parts as
+			| Array<{ type?: string; text?: string }>
+			| undefined;
+		const text = (parts ?? [])
+			.map((p) => p.text ?? "")
+			.join("")
+			.trim();
+		if (!text) {
+			res.status(400).json({ error: "empty prompt" });
+			return;
+		}
+		// Reject concurrent prompts while the session is already streaming.
+		if (rt.store.getStatus() === "busy") {
+			res.status(409).json({ error: "session is busy" });
+			return;
+		}
+		const messageID =
+			typeof req.body?.messageID === "string" ? req.body.messageID : undefined;
+		rt.store.pushUser(text, messageID);
+		rt.client.prompt(text).catch((err: unknown) => {
+			console.error(`[prompt] session ${rt.id} failed:`, err);
+		});
+		res.status(204).end();
+	};
+	router.post("/session/:id/prompt", promptHandler);
+	router.post("/session/:id/prompt_async", promptHandler);
+
+	router.post("/session/:id/abort", async (req: Request, res: Response) => {
+		const rt = await getRuntime(paramId(req));
+		if (!rt) {
+			res.status(404).json({ error: "session not found" });
+			return;
+		}
+		void rt.client.abort();
+		res.status(204).end();
+	});
+
+	// --- SSE (fan out across every live runtime) ---
+
+	const sseHandler = (req: Request, res: Response) => {
+		res.writeHead(200, {
+			"Content-Type": "text/event-stream",
+			"Cache-Control": "no-cache",
+			Connection: "keep-alive",
+		});
+		res.write(": connected\n\n");
+
+		const unsubscribe = registry.subscribeAll((change, id) => {
+			const rt = registry.get(id);
+			if (!rt) return;
+			const event = toOpencodeEvent(change, rt.store.getSession());
+			if (event) res.write(`data: ${JSON.stringify(event)}\n\n`);
+
+			// lsp.updated: an lsp* tool finished a scan — nudge the UI to reload
+			// its LSP panel (the reducer only calls onLoadLsp).
+			if (
+				change.type === "part_updated" &&
+				change.part.type === "tool" &&
+				change.part.state.status === "completed" &&
+				change.part.tool.includes("lsp")
+			) {
+				res.write(
+					`data: ${JSON.stringify({ id: nextEventId(), type: "lsp.updated", properties: { sessionID: id } })}\n\n`,
+				);
+			}
+		});
+
+		// Panel events broadcast from the web layer (git branch changes, etc.).
+		const unsubscribePanel = subscribePanelEvents((event) => {
+			res.write(`data: ${JSON.stringify(event)}\n\n`);
+		});
+
+		// MCP tool-set changes (agent layer detects register/unregister).
+		const unsubscribeMcpTools = registry.subscribeMcpToolsChanged(() => {
+			res.write(
+				`data: ${JSON.stringify({ id: nextEventId(), type: "mcp.tools.changed", properties: { server: "mcp" } })}\n\n`,
+			);
+		});
+
+		// Permission prompts (pi permission extensions via the injected uiContext).
+		const unsubscribePermissions = registry.permissionBroker.subscribe((prompt) => {
+			// question.asked: pi's uiContext.input is a free-text question.
+			if (prompt.kind === "input") {
+				const qevent = {
+					id: nextEventId(),
+					type: "question.asked",
+					properties: {
+						id: prompt.id,
+						sessionID: prompt.sessionId,
+						questions: [{ question: prompt.title, header: prompt.title.slice(0, 30), options: [] }],
+					},
+				};
+				res.write(`data: ${JSON.stringify(qevent)}\n\n`);
+				return;
+			}
+
+			// Map pi's uiContext prompts onto opencode's permission-card shape so
+			// the vendored PermissionCard renders the tool + command correctly.
+			const command = prompt.title.match(/Dangerous command:\s*\n\n([\s\S]*?)\n\nAllow\?/)?.[1]?.trim();
+			const isDangerousBash = prompt.kind === "select" && command !== undefined;
+			const writeEdit = prompt.title.match(/^Allow (write|edit)\?/)?.[1];
+			const tool = isDangerousBash ? "bash" : writeEdit ?? prompt.kind;
+			const event = {
+				id: nextEventId(),
+				type: "permission.asked",
+				properties: {
+					id: prompt.id,
+					sessionID: prompt.sessionId,
+					permission: tool,
+					patterns: [],
+					metadata: {
+						kind: prompt.kind,
+						title: prompt.title,
+						message: prompt.message,
+						options: prompt.options,
+						...(command ? { command, description: "Dangerous shell command" } : {}),
+					},
+					always: [],
+				},
+			};
+			res.write(`data: ${JSON.stringify(event)}\n\n`);
+		});
+
+		req.on("close", () => {
+			unsubscribe();
+			unsubscribePermissions();
+			unsubscribePanel();
+			unsubscribeMcpTools();
+		});
+	};
+	router.get("/event", sseHandler);
+	router.get("/global/event", sseHandler);
+
+	// Permission reply — opencode posts { reply: "once" | "always" | "reject", message? }.
+	router.post("/permission/:id/reply", (req: Request, res: Response) => {
+		const id = typeof req.params["id"] === "string" ? req.params["id"] : "";
+		const reply = req.body?.reply;
+		const allowed = reply !== "reject";
+		const message = typeof req.body?.message === "string" ? req.body.message : undefined;
+		const ok = registry.permissionBroker.respond(id, allowed, message);
+		res.json(ok);
+	});
+
+	// Question reply — opencode posts { answers: string[][] } (one answer array
+	// per question; pi's input prompt has a single free-text answer).
+	router.post("/session/:id/question/:requestId/reply", (req: Request, res: Response) => {
+		const requestId = typeof req.params["requestId"] === "string" ? req.params["requestId"] : "";
+		const answers = req.body?.answers;
+		const first = Array.isArray(answers) && Array.isArray(answers[0]) ? answers[0] : [];
+		const value = first.length > 0 ? String(first[0]) : "";
+		const ok = registry.permissionBroker.respond(requestId, true, value);
+		res.json(ok);
+	});
+
+	// --- config / project stubs (opencode endpoints the UI bootstraps) ---
+
+	router.get("/global/health", (_req, res: Response) => {
+		res.json({ ok: true });
+	});
+
+	// opencode's health check: the UI's checkHealth() gates bootstrap on
+	// `{ healthy: true }` — a wrong shape here puts the app in Startup-failed.
+	router.get("/opencode/health", (_req, res: Response) => {
+		res.json({ healthy: true });
+	});
+	router.get("/global/config", (_req, res: Response) => {
+		res.json({});
+	});
+	router.get("/config", (_req, res: Response) => {
+		res.json({});
+	});
+
+	// Agents — the UI gates sending on having at least one primary agent.
+	// Return a single default 'build' agent (pi is the only backend).
+	router.get("/agent", (_req, res: Response) => {
+		res.json([
+			{
+				name: "build",
+				description: "Default coding agent",
+				mode: "primary",
+				native: true,
+				permission: [
+					{ permission: "bash", pattern: "*", action: "allow" },
+					{ permission: "edit", pattern: "**", action: "allow" },
+					{ permission: "webfetch", pattern: "**", action: "allow" },
+				],
+			},
+		]);
+	});
+
+	router.get("/config/providers", async (_req, res: Response) => {
+		try {
+			const list = await listModelProviders();
+			res.json({ providers: list.providers, default: list.default });
+		} catch {
+			res.json({ providers: [], default: {} });
+		}
+	});
+
+	// Shared settings (theme, projects, activeProjectId, …) — persisted to
+	// ~/.config/openchamber/settings.json. The UI's project store syncs its
+	// project list from the PUT response; returning the merged settings (not a
+	// stub) is what keeps an added project from being immediately wiped.
+	router.get("/config/settings", (_req, res: Response) => {
+		res.json(readSettings());
+	});
+	router.put("/config/settings", (req: Request, res: Response) => {
+		const incoming = req.body && typeof req.body === "object" ? req.body : {};
+		const merged = { ...readSettings(), ...(incoming as Record<string, unknown>) };
+		writeSettings(merged);
+		res.json(merged);
+	});
+
+	// LSP server status — pi has no managed LSP servers (lsp_diagnostics is a
+	// runtime tool, not a per-session server registry), so this is honestly empty.
+	router.get("/lsp", (_req, res: Response) => {
+		res.json([]);
+	});
+
+	// MCP status + config — pi has no MCP server support, so these are empty.
+	router.get("/mcp", (_req, res: Response) => {
+		res.json({});
+	});
+	router.get("/config/mcp", (_req, res: Response) => {
+		res.json([]);
+	});
+
+	router.get("/project", (_req, res: Response) => {
+		res.json(projectsFromSettings(registry.cwd));
+	});
+	router.get("/project/current", (_req, res: Response) => {
+		res.json(currentProject(registry.cwd));
+	});
+	router.get("/path", (_req, res: Response) => {
+		const home = process.env.HOME ?? "";
+		res.json({
+			home,
+			state: home ? path.join(home, ".config", "pichamber") : "",
+			config: home ? path.join(home, ".config", "pichamber") : "",
+			worktree: registry.cwd,
+			directory: registry.cwd,
+		});
+	});
+
+	router.get("/fs/list", (req: Request, res: Response) => {
+		const dir = typeof req.query.path === "string" ? req.query.path : "/";
+		if (!isWithinHome(dir) || isSensitivePath(dir)) {
+			res.json({ directory: dir, entries: [] });
+			return;
+		}
+		try {
+			const entries = fs.readdirSync(dir, { withFileTypes: true });
+			const list = entries.map((e) => ({
+				name: e.name,
+				path: path.join(dir, e.name),
+				isDirectory: e.isDirectory(),
+			}));
+			res.json({ directory: dir, entries: list });
+		} catch {
+			res.json({ directory: dir, entries: [] });
+		}
+	});
+
+	router.get("/fs/home", (_req, res: Response) => {
+		res.json({ home: process.env.HOME ?? "/root" });
+	});
+
+	router.get("/fs/read", (req: Request, res: Response) => {
+		const p = typeof req.query.path === "string" ? req.query.path : "";
+		if (!isWithinHome(p) || isSensitivePath(p)) {
+			res.status(403).type("text/plain").send("");
+			return;
+		}
+		try {
+			const content = fs.readFileSync(p, "utf8");
+			res.type("text/plain").send(content);
+		} catch {
+			res.status(404).type("text/plain").send("");
+		}
+	});
+
+	app.use("/api", router);
+}
+
+const project = {
+	id: "project-1",
+	worktree: "", // always overridden with the session cwd (see projectsFromSettings)
+	name: "pichamber",
+	vcs: "git",
+	time: { created: Date.now(), updated: Date.now() },
+	sandboxes: [],
+};
+
+type OpencodeProject = {
+	id: string;
+	worktree: string;
+	name: string;
+	vcs: string;
+	time: { created: number; updated: number };
+	sandboxes: unknown[];
+};
+
+/** Map settings.projects (UI ProjectEntry[]) into opencode Project shapes. */
+function projectsFromSettings(cwd: string): OpencodeProject[] {
+	const settings = readSettings();
+	const entries = Array.isArray(settings.projects)
+		? (settings.projects as Array<Record<string, unknown>>)
+		: [];
+	if (entries.length === 0) return [{ ...project, worktree: cwd }];
+	return entries.map((p) => {
+		const pPath = typeof p.path === "string" ? p.path : cwd;
+		const label = typeof p.label === "string" && p.label ? p.label : "";
+		const name = label || path.basename(pPath);
+		return {
+			id: typeof p.id === "string" ? p.id : `project-${pPath}`,
+
+			worktree: pPath,
+			name,
+			vcs: "git",
+			time: {
+				created: typeof p.addedAt === "number" ? p.addedAt : Date.now(),
+				updated: typeof p.lastOpenedAt === "number" ? p.lastOpenedAt : Date.now(),
+			},
+			sandboxes: [],
+		};
+	});
+}
+
+/** The project whose worktree matches the current session directory. */
+function currentProject(cwd: string): OpencodeProject {
+	const list = projectsFromSettings(cwd);
+	return list.find((p) => p.worktree === cwd) ?? { ...project, worktree: cwd };
+}

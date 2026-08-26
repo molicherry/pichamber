@@ -1,0 +1,35 @@
+# pichamber — Third-Party Notices
+
+pichamber includes software from the following open-source projects. Their
+respective licenses permit use, modification, and redistribution subject to
+the conditions below.
+
+## OpenChamber
+
+- Project: https://github.com/openchamber/openchamber
+- Copyright (c) 2025 Bohdan Triapitsyn
+- License: MIT
+
+The `packages/ui` source is vendored from OpenChamber (MIT License), with the
+OpenCode agent layer replaced by a pi-agent adapter. See `LICENSE.openchamber`
+for the full MIT license text.
+
+## pi (pi-coding-agent)
+
+- Package: `@earendil-works/pi-coding-agent`
+- Project: https://github.com/badlogic/pi
+- License: MIT
+
+pi is used as the bottom-layer coding agent via its TypeScript SDK. See
+`LICENSE.pi` for the full MIT license text.
+
+---
+
+MIT License summary: Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated documentation files
+(the "Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to permit
+persons to whom the Software is furnished to do so, subject to inclusion of
+the above copyright notice and this permission notice in all copies or
+substantial portions of the Software.

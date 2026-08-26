@@ -1,0 +1,19 @@
+{
+  "name": "pichamber",
+  "version": "0.1.0",
+  "description": "pi-agent workspace with an openchamber-style upper layer and a pi-agent abstraction bottom layer",
+  "private": true,
+  "type": "module",
+  "packageManager": "bun@1.4.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "type-check": "bun run --filter '*' type-check",
+    "lint": "bun run --filter '*' lint",
+    "test": "bun run --filter '*' test"
+  }
+}

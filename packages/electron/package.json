@@ -1,0 +1,7 @@
+{
+  "name": "@pichamber/electron",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Placeholder — desktop shell lands in phase 2"
+}
