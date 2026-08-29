@@ -1,0 +1,47 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  web:
+    name: Type-check / test / lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Type-check
+        run: bun run type-check
+
+      - name: Test
+        run: bun run test
+
+      - name: Lint
+        run: bun run lint
+
+  docker:
+    name: Docker image build
+    needs: web
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -t pichamber-web .
+
+  # --- Future surfaces (enabled when implemented) ---
+  # desktop: type-check + electron build  (packages/electron, phase 2)
+  # mobile:  type-check + mobile build    (packages/mobile, TBD)

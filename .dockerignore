@@ -1,0 +1,14 @@
+# Build context exclusions — keep the Docker build lean and secret-free.
+node_modules
+.git
+.gitignore
+.trellis
+.pi
+.agents
+.pi-subagents
+AGENTS.md
+.env
+.env.*
+*.tsbuildinfo
+packages/*/dist
+packages/*/node_modules
