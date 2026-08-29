@@ -1,0 +1,16 @@
+services:
+  pichamber:
+    image: ghcr.io/molicherry/pichamber:latest
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      # pi 运行时目录(镜像内置插件 + 挂载的 models.json)
+      - PI_CODING_AGENT_DIR=/app/.pi-agent
+      # 可选:bearer token 认证(不设则开放)
+      - PICAMBER_TOKEN=${PICAMBER_TOKEN:-}
+      # 可选:额外允许的跨域 origin(逗号分隔)
+      - PICAMBER_ALLOWED_ORIGIN=${PICAMBER_ALLOWED_ORIGIN:-}
+    volumes:
+      # models.json 含 API key,不进镜像,从宿主机只读挂载
+      - ${HOME}/.pi/agent/models.json:/app/.pi-agent/models.json:ro
