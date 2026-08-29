@@ -11,12 +11,18 @@ import { createOpencodeRoutes } from "./opencode.js";
 import { createGitRoutes } from "./gitRoutes.js";
 import { createGithubRoutes } from "./githubRoutes.js";
 import { createTerminalRoutes } from "./terminalRoutes.js";
+import { detectPiRuntime, formatPiRuntimeWarning } from "./piRuntime.js";
 import http from "node:http";
 
 async function main(): Promise<void> {
 	// The agent runs against the repo root (packages/web is only the transport).
 	const cwd = path.resolve(process.cwd(), "../..");
 
+	// Detect pi runtime deps (plugins/extensions/models.json) up front and
+	// warn loudly — silent degradation is worse than a clear startup error.
+	const piRuntime = detectPiRuntime();
+	const piWarning = formatPiRuntimeWarning(piRuntime);
+	if (piWarning) console.warn(piWarning);
 	const registry = new SessionRegistry({
 		cwd,
 		tools: [
@@ -87,7 +93,7 @@ async function main(): Promise<void> {
 	// session-folders, permission-auto-accept, etc.). Return benign empty shapes.
 	app.use("/api", (req, res) => {
 		if (req.path.includes("/health")) {
-			res.json({ ok: true });
+			res.json({ ok: true, pi: piRuntime });
 			return;
 		}
 		if (req.path.includes("/event") || req.path.includes("/stream")) {
@@ -99,7 +105,7 @@ async function main(): Promise<void> {
 	});
 
 	app.get("/api/health", (_req, res) => {
-		res.status(200).json({ ok: true });
+		res.status(200).json({ ok: true, pi: piRuntime });
 	});
 
 	// Runtime URL auth token — opencode mints one during bootstrap; the UI
