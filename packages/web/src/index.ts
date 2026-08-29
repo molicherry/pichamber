@@ -104,12 +104,8 @@ async function main(): Promise<void> {
 		else res.status(200).json({});
 	});
 
-	app.get("/api/health", (_req, res) => {
-		res.status(200).json({ ok: true, pi: piRuntime });
-	});
 
 	// Runtime URL auth token — opencode mints one during bootstrap; the UI
-	// fails to initialize (Startup failed) without it. pichamber has no real
 	// auth yet, so return a stable token.
 	app.post("/auth/url-token", (_req, res) => {
 		res.json({ token: authToken ?? "pichamber-local", expiresAt: Date.now() + 24 * 60 * 60 * 1000 });
