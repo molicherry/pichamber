@@ -122,10 +122,84 @@ async function defaultModel(): Promise<string | undefined> {
 /** The opencode Config object: the model + agent pi actually has. */
 async function configObject(): Promise<Record<string, unknown>> {
 	const model = await defaultModel();
+	const mcp: Record<string, unknown> = {};
+	for (const [name, entry] of Object.entries(readMcpServers())) {
+		const mapped = toOpencodeMcpConfig(entry);
+		if (mapped) mcp[name] = mapped;
+	}
 	return {
 		...(model ? { model } : {}),
 		agent: { build: buildAgent },
+		...(Object.keys(mcp).length > 0 ? { mcp } : {}),
 	};
+}
+
+const MCP_CONFIG_PATH = path.join(resolveAgentDir(), "mcp.json");
+const MCP_CACHE_PATH = path.join(resolveAgentDir(), "mcp-cache.json");
+
+function readJsonObject(p: string): Record<string, unknown> | null {
+	try {
+		const parsed: unknown = JSON.parse(fs.readFileSync(p, "utf8"));
+		return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+			? (parsed as Record<string, unknown>)
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+/** Map a pi-mcp-adapter ServerEntry → opencode McpLocalConfig | McpRemoteConfig. */
+function toOpencodeMcpConfig(entry: Record<string, unknown>): Record<string, unknown> | null {
+	const enabled = entry.disabled !== true;
+	const url = typeof entry.url === "string" ? entry.url : "";
+	const command = typeof entry.command === "string" ? entry.command : "";
+	const args = Array.isArray(entry.args) ? entry.args.filter((a): a is string => typeof a === "string") : [];
+	const mask = (obj: Record<string, string> | undefined): Record<string, string> | undefined =>
+		obj ? Object.fromEntries(Object.keys(obj).map((k) => [k, "••••••"])) : undefined;
+	const env = mask(entry.env && typeof entry.env === "object" ? (entry.env as Record<string, string>) : undefined);
+	// Header/env values may hold secrets (API keys) — pi makes the connection
+	// server-side, so the browser only needs the keys, never the values.
+	const headers = mask(entry.headers && typeof entry.headers === "object" ? (entry.headers as Record<string, string>) : undefined);
+
+	if (url) {
+		return {
+			type: "remote",
+			url,
+			enabled,
+			...(headers ? { headers } : {}),
+			...(entry.auth === "oauth" ? { oauth: {} } : entry.auth === "bearer" || entry.auth === false ? { oauth: false } : {}),
+		};
+	}
+	if (command) {
+		return {
+			type: "local",
+			command: [command, ...args],
+			enabled,
+			...(env ? { environment: env } : {}),
+		};
+	}
+	// socket-only servers have no opencode equivalent.
+	return null;
+}
+
+/** Configured MCP servers from pi-mcp-adapter's mcp.json. */
+function readMcpServers(): Record<string, Record<string, unknown>> {
+	const config = readJsonObject(MCP_CONFIG_PATH);
+	const servers = config?.mcpServers;
+	if (servers && typeof servers === "object" && !Array.isArray(servers)) {
+		return servers as Record<string, Record<string, unknown>>;
+	}
+	return {};
+}
+
+/** Server names that have cached tool metadata (connected at least once). */
+function cachedMcpServerNames(): Set<string> {
+	const cache = readJsonObject(MCP_CACHE_PATH);
+	const servers = cache?.servers;
+	if (servers && typeof servers === "object" && !Array.isArray(servers)) {
+		return new Set(Object.keys(servers as Record<string, unknown>));
+	}
+	return new Set();
 }
 
 export function createOpencodeRoutes(
@@ -430,12 +504,27 @@ export function createOpencodeRoutes(
 		res.json([]);
 	});
 
-	// MCP status + config — pi has no MCP server support, so these are empty.
-	router.get("/mcp", (_req, res: Response) => {
-		res.json({});
-	});
+	// MCP config + status — read pi-mcp-adapter's config + metadata cache.
+	// Live connection state lives in pi's extension event bus and isn't exposed
+	// to the web layer, so /mcp is best-effort: disabled from config, connected
+	// when a server has cached tool metadata.
 	router.get("/config/mcp", (_req, res: Response) => {
-		res.json([]);
+		const out: Record<string, unknown> = {};
+		for (const [name, entry] of Object.entries(readMcpServers())) {
+			const mapped = toOpencodeMcpConfig(entry);
+			if (mapped) out[name] = mapped;
+		}
+		res.json(out);
+	});
+
+	router.get("/mcp", (_req, res: Response) => {
+		const cached = cachedMcpServerNames();
+		const out: Record<string, { status: string }> = {};
+		for (const [name, entry] of Object.entries(readMcpServers())) {
+			if (entry.disabled === true) out[name] = { status: "disabled" };
+			else if (cached.has(name)) out[name] = { status: "connected" };
+		}
+		res.json(out);
 	});
 
 	router.get("/project", (_req, res: Response) => {
