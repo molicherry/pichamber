@@ -22,7 +22,9 @@ export interface AuthConfig {
 	password: string;
 }
 
-export function readAuthConfig(env: NodeJS.ProcessEnv = process.env): AuthConfig {
+export function readAuthConfig(
+	env: NodeJS.ProcessEnv = process.env,
+): AuthConfig {
 	return {
 		token: (env.PICAMBER_TOKEN ?? "").trim(),
 		password: (env.PICAMBER_PASSWORD ?? "").trim(),
@@ -107,13 +109,17 @@ export interface CredentialInput {
 }
 
 /** True when any credential (static token, url token, session cookie) is valid. */
-export function checkCredentials(input: CredentialInput, config: AuthConfig): boolean {
+export function checkCredentials(
+	input: CredentialInput,
+	config: AuthConfig,
+): boolean {
 	const bearer = input.bearer ?? "";
 	const query = input.query ?? "";
 	const cookieHeader = input.cookieHeader ?? "";
 
 	// Static bearer token (API/automation).
-	if (config.token && (bearer === config.token || query === config.token)) return true;
+	if (config.token && (bearer === config.token || query === config.token))
+		return true;
 
 	// Minted url token.
 	if (isValidUrlToken(query) || isValidUrlToken(bearer)) return true;

@@ -3,6 +3,8 @@
  * Self-contained: this file must never import the pi SDK.
  */
 
+import type { AgentUsage } from "./events.js";
+
 export type AgentPart =
 	| { type: "text"; text: string }
 	| { type: "reasoning"; text: string }
@@ -29,6 +31,8 @@ export interface AgentMessage {
 	isError?: boolean;
 	/** Unified patch (edit tool) surfaced as a PatchPart on restore. */
 	patch?: string;
+	/** LLM usage for assistant messages (pi persists it; used to restore token totals). */
+	usage?: AgentUsage;
 }
 
 export interface AgentSnapshot {

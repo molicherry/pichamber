@@ -14,6 +14,14 @@ import type { TodoItem } from "./todo.js";
 import { createSubtaskTool } from "./subtask.js";
 import { PermissionBroker } from "./permission.js";
 
+/** Per-session token totals (mapped from pi's per-message usage). */
+export interface SessionTokens {
+	input: number;
+	output: number;
+	reasoning: number;
+	cache: { read: number; write: number };
+}
+
 /** Lightweight session summary (no live runtime), derived from disk. */
 export interface SessionHandle {
 	id: string;
@@ -22,6 +30,7 @@ export interface SessionHandle {
 	createdAt: number;
 	updatedAt: number;
 	messageCount: number;
+	tokens: SessionTokens;
 }
 
 /** A live session: the agent client plus its opencode-model store. */
@@ -65,16 +74,25 @@ export class SessionRegistry {
 	/** List persisted sessions (newest first, per pi SessionManager.list). */
 	async list(): Promise<SessionHandle[]> {
 		const infos = await SessionManager.list(this.opts.cwd);
-		return infos.map((info) => ({
-			id: info.id,
-			title:
-				info.name ??
-				(info.firstMessage ? truncate(info.firstMessage) : "New session"),
-			directory: info.cwd || this.opts.cwd,
-			createdAt: info.created.getTime(),
-			updatedAt: info.modified.getTime(),
-			messageCount: info.messageCount,
-		}));
+		return infos.map((info) => {
+			let tokens: SessionTokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
+			try {
+				tokens = sumSessionTokens(SessionManager.open(info.path));
+			} catch {
+				// Unreadable session → zero totals (never fail the whole list).
+			}
+			return {
+				id: info.id,
+				title:
+					info.name ??
+					(info.firstMessage ? truncate(info.firstMessage) : "New session"),
+				directory: info.cwd || this.opts.cwd,
+				createdAt: info.created.getTime(),
+				updatedAt: info.modified.getTime(),
+				messageCount: info.messageCount,
+				tokens,
+			};
+		});
 	}
 
 	/** Create a brand-new persisted session. */
@@ -201,4 +219,34 @@ export class SessionRegistry {
 function truncate(text: string, max = 60): string {
 	const t = text.replace(/\s+/g, " ").trim();
 	return t.length > max ? `${t.slice(0, max)}…` : t;
+}
+
+/** Sum per-message LLM usage across a session's entries into opencode token totals. */
+function sumSessionTokens(manager: SessionManager): SessionTokens {
+	const out: SessionTokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
+	for (const entry of manager.getEntries()) {
+		const message = (entry as { message?: { usage?: unknown } }).message;
+		if (!message?.usage) continue;
+		const t = usageToTokens(message.usage);
+		out.input += t.input;
+		out.output += t.output;
+		out.reasoning += t.reasoning;
+		out.cache.read += t.cache.read;
+		out.cache.write += t.cache.write;
+	}
+	return out;
+}
+
+function usageToTokens(usage: unknown): SessionTokens {
+	const u = (usage ?? {}) as Record<string, unknown>;
+	return {
+		input: toNumber(u["input"]),
+		output: toNumber(u["output"]),
+		reasoning: toNumber(u["reasoning"]),
+		cache: { read: toNumber(u["cacheRead"]), write: toNumber(u["cacheWrite"]) },
+	};
+}
+
+function toNumber(v: unknown): number {
+	return typeof v === "number" ? v : 0;
 }

@@ -108,7 +108,7 @@ function extractText(content: unknown): string {
 	return parts.join("");
 }
 
-function extractUsage(usage: unknown): AgentUsage {
+export function extractUsage(usage: unknown): AgentUsage {
 	const u = (usage ?? {}) as Record<string, unknown>;
 	const cost = (u["cost"] ?? {}) as Record<string, unknown>;
 	return {

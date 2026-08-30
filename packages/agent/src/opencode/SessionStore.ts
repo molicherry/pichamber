@@ -385,12 +385,22 @@ export class SessionStore {
     this.parts.push(part);
     this.emit({ type: "part_added", part });
     this.accumulateTokens(usage);
+    // Populate the assistant message's tokens too — the UI reads message.tokens
+    // (not session.tokens) for its context panel and token readouts.
+    this.currentAssistant.tokens = this.addUsage(this.currentAssistant.tokens, usage);
   }
 
   private accumulateTokens(usage: AgentUsage): void {
     const t = this.session.tokens;
     if (!t) return;
-    this.session.tokens = {
+    this.session.tokens = this.addUsage(t, usage);
+  }
+
+  private addUsage(
+    t: { input: number; output: number; reasoning: number; cache: { read: number; write: number } },
+    usage: AgentUsage,
+  ): { input: number; output: number; reasoning: number; cache: { read: number; write: number } } {
+    return {
       input: t.input + usage.input,
       output: t.output + usage.output,
       reasoning: t.reasoning + usage.reasoning,
@@ -519,6 +529,10 @@ export class SessionStore {
 					finish: "completed",
 				};
 				this.messages.push(message);
+				if (msg.usage) {
+					message.tokens = this.addUsage(message.tokens, msg.usage);
+					this.accumulateTokens(msg.usage);
+				}
 				const ts = msg.timestamp;
 				for (const part of parts) {
 					if (part.type === "text" && part.text) {

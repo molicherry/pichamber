@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test";
 import type { AgentClient } from "../contracts/client.js";
 import type { AgentEvent } from "../contracts/events.js";
-import type { AgentSnapshot } from "../contracts/snapshot.js";
+import type { AgentMessage, AgentSnapshot } from "../contracts/snapshot.js";
 import { SessionStore } from "./SessionStore.js";
 
 function createFakeClient(): {
@@ -172,4 +172,49 @@ describe("SessionStore", () => {
       expect(assistant.error?.name).toBe("UnknownError");
     }
   });
+	it("populates assistant message tokens (the UI reads message.tokens)", () => {
+		const { client, emit } = createFakeClient();
+		const store = new SessionStore(client, { title: "t", directory: "/d" });
+		store.start();
+
+		emit({ type: "agent_start" });
+		emit({ type: "turn_start" });
+		emit({ type: "text_delta", delta: "x" });
+		emit({ type: "turn_end", usage: { input: 100, output: 50, cacheRead: 10, cacheWrite: 5, totalTokens: 165, reasoning: 30, cost: 0.01 } });
+		emit({ type: "agent_end" });
+
+		const assistant = store.getMessages().find((m) => m.role === "assistant");
+		if (assistant && assistant.role === "assistant") {
+			expect(assistant.tokens.input).toBe(100);
+			expect(assistant.tokens.output).toBe(50);
+			expect(assistant.tokens.reasoning).toBe(30);
+			expect(assistant.tokens.cache.read).toBe(10);
+			expect(assistant.tokens.cache.write).toBe(5);
+		}
+	});
+
+	it("restores token totals from persisted usage", () => {
+		const { client } = createFakeClient();
+		const store = new SessionStore(client, { title: "t", directory: "/d" });
+		const history: AgentMessage[] = [
+			{ role: "user", text: "hi", timestamp: 1 },
+			{
+				role: "assistant",
+				timestamp: 2,
+				parts: [{ type: "text", text: "yo" }],
+				usage: { input: 40, output: 20, cacheRead: 0, cacheWrite: 0, totalTokens: 60, reasoning: 5, cost: 0.001 },
+			},
+		];
+		store.restore(history);
+
+		expect(store.getSession().tokens?.input).toBe(40);
+		expect(store.getSession().tokens?.output).toBe(20);
+		expect(store.getSession().tokens?.reasoning).toBe(5);
+
+		const assistant = store.getMessages().find((m) => m.role === "assistant");
+		if (assistant && assistant.role === "assistant") {
+			expect(assistant.tokens.input).toBe(40);
+			expect(assistant.tokens.output).toBe(20);
+		}
+	});
 });

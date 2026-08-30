@@ -55,7 +55,7 @@ function toOpencodeSession(h: SessionHandle): Session {
 		directory: h.directory,
 		title: h.title,
 		version: "0",
-		tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+		tokens: h.tokens,
 		time: { created: h.createdAt, updated: h.updatedAt },
 	};
 }

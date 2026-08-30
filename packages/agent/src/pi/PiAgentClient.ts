@@ -18,7 +18,7 @@ import type {
 import type { AgentClient, PromptOpts } from "../contracts/client.js";
 import type { AgentEvent } from "../contracts/events.js";
 import type { AgentMessage, AgentPart, AgentSnapshot } from "../contracts/snapshot.js";
-import { mapEvent } from "./mapEvent.js";
+import { extractUsage, mapEvent } from "./mapEvent.js";
 import { createWebUIContext, createWriteGateExtension } from "../permission.js";
 import type { PermissionBroker } from "../permission.js";
 
@@ -239,13 +239,19 @@ function toContractMessage(m: {
 	toolCallId?: string;
 	toolName?: string;
 	details?: unknown;
+	usage?: unknown;
 }): AgentMessage {
 	const timestamp = m.timestamp;
 	switch (m.role) {
 		case "user":
 			return { role: "user", timestamp, ...withText(m.content) };
 		case "assistant":
-			return { role: "assistant", timestamp, parts: mapParts(m.content) };
+			return {
+				role: "assistant",
+				timestamp,
+				parts: mapParts(m.content),
+				...(m.usage ? { usage: extractUsage(m.usage) } : {}),
+			};
 		case "toolResult": {
 			const details = (m.details ?? {}) as Record<string, unknown>;
 			const patch = typeof details.patch === "string" ? details.patch : undefined;
