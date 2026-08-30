@@ -1,6 +1,6 @@
 {
   "name": "pichamber",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "pi-agent workspace with an openchamber-style upper layer and a pi-agent abstraction bottom layer",
   "private": true,
   "type": "module",
