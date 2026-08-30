@@ -27,8 +27,11 @@ import {
 import http from "node:http";
 
 async function main(): Promise<void> {
-	// The agent runs against the repo root (packages/web is only the transport).
-	const cwd = path.resolve(process.cwd(), "../..");
+	// The agent works against PICAMBER_WORKSPACE when set (the mounted
+	// workspace in Docker); otherwise fall back to the repo root (local dev).
+	const cwd = process.env.PICAMBER_WORKSPACE
+		? path.resolve(process.env.PICAMBER_WORKSPACE)
+		: path.resolve(process.cwd(), "../..");
 
 	// Detect pi runtime deps (plugins/extensions/models.json) up front and
 	// warn loudly — silent degradation is worse than a clear startup error.

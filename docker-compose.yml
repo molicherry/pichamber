@@ -7,6 +7,8 @@ services:
     environment:
       # pi 运行时目录(镜像内置插件 + 挂载的 models.json)
       - PI_CODING_AGENT_DIR=/app/.pi-agent
+      # agent 工作目录(容器内路径;须在 HOME 边界内,配合文件浏览/终端)
+      - PICAMBER_WORKSPACE=/root/workspace
       # 可选:UI 密码认证(不设则不启用密码门)
       - PICAMBER_PASSWORD=${PICAMBER_PASSWORD:-}
       # 可选:bearer token 认证(不设则开放)
@@ -16,3 +18,5 @@ services:
     volumes:
       # models.json 含 API key,不进镜像,从宿主机只读挂载
       - ${HOME}/.pi/agent/models.json:/app/.pi-agent/models.json:ro
+      # 工作目录:宿主机 workspace 挂到容器同路径(默认 ${HOME}/workspace)
+      - ${PICAMBER_WORKSPACE_HOST:-${HOME}/workspace}:/root/workspace

@@ -35,6 +35,9 @@ compose 直接拉取预构建的 GHCR 镜像(`ghcr.io/molicherry/pichamber:lates
 ```bash
 # 1. 准备 models.json(含 API key,不打包进镜像)
 #    确保 ~/.pi/agent/models.json 存在,compose 会只读挂载到 /app/.pi-agent/models.json
+#
+#    准备工作目录:默认挂载宿主机 ~/workspace 到容器 /root/workspace,
+#    agent 会在其中干活;可用 PICAMBER_WORKSPACE_HOST 指定其它宿主路径。
 
 # 2. (可选)复制环境变量模板,按需填 PICAMBER_PASSWORD / PICAMBER_TOKEN / PICAMBER_ALLOWED_ORIGIN
 cp .env.example .env
@@ -53,7 +56,7 @@ docker compose up -d
 | `PICAMBER_TOKEN` | 可选。静态 bearer token,用于 API/自动化客户端(`Authorization: Bearer <token>` 或 `?token=`),不影响 UI 密码门;不设则开放 |
 | `PICAMBER_ALLOWED_ORIGIN` | 可选。额外允许的跨域 origin(逗号分隔);默认只允许 localhost/127.0.0.1 |
 | `PORT` | 服务端口,默认 `8787`;compose 固定映射宿主 8787 |
-| `PI_CODING_AGENT_DIR` | pi 运行时目录(镜像内置插件 + 挂载 models.json),compose 已设为 `/app/.pi-agent` |
+| `PICAMBER_WORKSPACE` | 可选。agent 工作目录(容器内路径)。本地直跑时填绝对路径;compose 已固定为 `/root/workspace` |
 
 ### 本地构建(不依赖 GHCR)
 
