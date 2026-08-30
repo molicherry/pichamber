@@ -21,6 +21,7 @@ import type {
 } from "@pichamber/agent";
 import { listModelProviders } from "@pichamber/agent";
 import { nextEventId, toOpencodeEvent, type OpencodeEvent } from "./sseEvents.js";
+import { resolveAgentDir } from "./piRuntime.js";
 
 
 /**
@@ -60,12 +61,8 @@ function toOpencodeSession(h: SessionHandle): Session {
 	};
 }
 
-const SETTINGS_PATH = path.join(
-	process.env.HOME ?? "/root",
-	".config",
-	"openchamber",
-	"settings.json",
-);
+const CONFIG_DIR = path.join(process.env.HOME ?? "/root", ".config", "openchamber");
+const SETTINGS_PATH = path.join(CONFIG_DIR, "settings.json");
 
 function readSettings(): Record<string, unknown> {
 	try {
@@ -448,8 +445,8 @@ export function createOpencodeRoutes(
 		const home = process.env.HOME ?? "";
 		res.json({
 			home,
-			state: home ? path.join(home, ".config", "pichamber") : "",
-			config: home ? path.join(home, ".config", "pichamber") : "",
+			state: resolveAgentDir(),
+			config: CONFIG_DIR,
 			worktree: registry.cwd,
 			directory: registry.cwd,
 		});

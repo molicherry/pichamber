@@ -27,7 +27,7 @@ const REQUIRED_EXTENSIONS = [
 ];
 
 /** Resolve pi's agent dir the same way pi's getAgentDir() does. */
-function resolveAgentDir(): string {
+export function resolveAgentDir(): string {
 	return (
 		process.env.PI_CODING_AGENT_DIR ??
 		path.join(process.env.HOME ?? "/root", ".pi", "agent")
