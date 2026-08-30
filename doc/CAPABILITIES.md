@@ -57,7 +57,7 @@
 | GET /opencode/health | ✅ | `{healthy:true}` |
 | GET /global/config | ✅ | 真实 config(model + agent) | `opencode.ts:356` |
 | GET /config | ✅ | 真实 config(model + agent) | `opencode.ts:359` |
-| GET /agent | ⚠️ | 硬编码单个 `build` agent,permission 全 allow | `opencode.ts:365` |
+| GET /agent | ✅ | 单个 build agent + 真实 permission(write/edit ask,bash allow) | `opencode.ts:397` |
 | GET /config/providers | ✅ | pi models 映射 | `opencode.ts:381` |
 | GET/PUT /config/settings | ✅ | `~/.config/openchamber/settings.json` | `opencode.ts:394/397` |
 | GET /lsp | ❌ | 空 `[]`(pi 无常驻 LSP server) | `opencode.ts:406` |
@@ -98,7 +98,7 @@
 | GET /terminal/sessions | ✅ | |
 | POST /terminal/touch | ❌ | 空 204 stub | `terminalRoutes.ts:366` |
 | POST /terminal/:id/restart | ✅ | |
-| POST /terminal/:id/appearance | ❌ | 空 204 stub | `terminalRoutes.ts:394` |
+| POST /terminal/:id/appearance | ✅ | 204 no-op(dead code — 当前 UI 未调用,外观由前端主题直接应用) | `terminalRoutes.ts:394` |
 | POST /terminal/:id/resize | ✅ | pty.resize 真生效 |
 | DELETE /terminal/:id | ✅ | |
 | POST /terminal/force-kill | ✅ | |
@@ -111,10 +111,10 @@
 3. **G lsp 面板** — `/lsp` 空;要实时诊断面板需在 web 层自造常驻 LSP server(重)。
 4. **L config** — ✅ 已修(`/config`、`/global/config` 返回真实 model + agent;commands/snippets 仍空,无 pi 等价物)。
 5. **用量统计** — ✅ 已修(列表 + 单会话 + 消息 tokens 均返回真实值,重启可还原)。
-6. **/agent** — 硬编码单个 `build` agent + 全 allow 权限,未从配置读。
+6. **/agent** — ✅ 已修(permission 反映 write/edit ask;单 agent 是 pi 的真实状态)。
 7. **GitHub 面板** — 仅 3 端点,issues/search/commits 等未接。
 8. **/path** — ✅ 已修(config→`.config/openchamber`,state→pi agent dir)。
-9. **terminal shells/touch/appearance** — shells 硬编码、touch/appearance 为 stub。
+9. **terminal shells/touch/appearance** — 仅 shells 硬编码(appearance/touch 是 no-op,无实际影响)。
 10. **agent 层 B/D/E/K 完整性** — 未逐行重审。
 
 ## 同步 openchamber 的流程

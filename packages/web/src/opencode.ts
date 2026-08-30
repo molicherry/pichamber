@@ -97,9 +97,12 @@ const buildAgent = {
 	mode: "primary",
 	native: true,
 	permission: [
+		// write/edit are gated by the write-gate extension (runtime confirm).
+		{ permission: "write", pattern: "**", action: "ask" },
+		{ permission: "edit", pattern: "**", action: "ask" },
+		// bash is allowed, but dangerous commands ask at runtime via permission-gate
+		// (not expressible in this pattern field).
 		{ permission: "bash", pattern: "*", action: "allow" },
-		{ permission: "edit", pattern: "**", action: "allow" },
-		{ permission: "webfetch", pattern: "**", action: "allow" },
 	],
 };
 
