@@ -23,7 +23,7 @@
 | J mcp | ⚠️ | agent 工具并集通;但 **管理面板端点空** | `opencode.ts:411/414` |
 | K subtask | ✅* | 只读子代理,深度 1(未逐行重审) | `packages/agent/src/subtask.ts` |
 | L provider/model | ⚠️ | `/config/providers` 真;`/config` 空 | `opencode.ts:381/359` |
-| 用量统计 | ❌ | session tokens 硬编码 0 | `opencode.ts:58` |
+| 用量统计 | ✅ | session tokens + 消息 tokens 已接上(累计 + 重启还原) | `SessionStore.ts`、`sessionRegistry.ts` |
 
 `✅*` = 核心链路已验证,但该域的 agent 层完整性未在本轮逐行重审。
 
@@ -110,7 +110,7 @@
 2. **J mcp 管理面板** — `/mcp`、`/config/mcp` 空;agent 能用 MCP 工具,但 UI 面板看不到/配不了。
 3. **G lsp 面板** — `/lsp` 空;要实时诊断面板需在 web 层自造常驻 LSP server(重)。
 4. **L config** — `/config`、`/global/config` 空;只有 `/config/providers` 真。
-5. **用量统计** — session `tokens` 硬编码 0,用量永远显示 0。
+5. **用量统计** — ✅ 已修(列表 + 单会话 + 消息 tokens 均返回真实值,重启可还原)。
 6. **/agent** — 硬编码单个 `build` agent + 全 allow 权限,未从配置读。
 7. **GitHub 面板** — 仅 3 端点,issues/search/commits 等未接。
 8. **/path** — state/config 路径与 settings.json 实际路径不一致(`.config/pichamber` vs `.config/openchamber`)。
