@@ -65,7 +65,7 @@
 | GET /config/mcp | ❌ | 空 `[]` | `opencode.ts:414` |
 | GET /project | ✅ | 从 settings 动态读 |
 | GET /project/current | ✅ | 动态解析当前 cwd |
-| GET /path | ⚠️ | state/config 写死 `.config/pichamber`,与 settings 实际用的 `.config/openchamber` 不一致 | `opencode.ts:428-429` |
+| GET /path | ✅ | config→`.config/openchamber`(与 settings 一致),state→pi agent dir | `opencode.ts:449` |
 | GET /fs/list · /fs/home · /fs/read | ✅ | HOME 边界 |
 | POST /permission/:id/reply | ✅ | |
 | POST /session/:id/question/:requestId/reply | ✅ | |
@@ -113,7 +113,7 @@
 5. **用量统计** — ✅ 已修(列表 + 单会话 + 消息 tokens 均返回真实值,重启可还原)。
 6. **/agent** — 硬编码单个 `build` agent + 全 allow 权限,未从配置读。
 7. **GitHub 面板** — 仅 3 端点,issues/search/commits 等未接。
-8. **/path** — state/config 路径与 settings.json 实际路径不一致(`.config/pichamber` vs `.config/openchamber`)。
+8. **/path** — ✅ 已修(config→`.config/openchamber`,state→pi agent dir)。
 9. **terminal shells/touch/appearance** — shells 硬编码、touch/appearance 为 stub。
 10. **agent 层 B/D/E/K 完整性** — 未逐行重审。
 
