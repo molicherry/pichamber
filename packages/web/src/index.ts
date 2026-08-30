@@ -12,6 +12,18 @@ import { createGitRoutes } from "./gitRoutes.js";
 import { createGithubRoutes } from "./githubRoutes.js";
 import { createTerminalRoutes } from "./terminalRoutes.js";
 import { detectPiRuntime, formatPiRuntimeWarning } from "./piRuntime.js";
+import {
+	checkCredentials,
+	isAuthEnabled,
+	isValidSession,
+	mintSession,
+	mintUrlToken,
+	parseCookies,
+	readAuthConfig,
+	SESSION_COOKIE,
+	SESSION_MAX_AGE_SECONDS,
+	URL_TOKEN_TTL_MS,
+} from "./auth.js";
 import http from "node:http";
 
 async function main(): Promise<void> {
@@ -52,27 +64,34 @@ async function main(): Promise<void> {
 	);
 	app.use(express.json());
 
-	// Optional bearer-token auth. When PICAMBER_TOKEN is set, every /api and
-	// /auth request must present it (Authorization header or ?token= for SSE).
-	// Without the env var the server stays open (current behaviour).
-	const authToken = process.env.PICAMBER_TOKEN;
-	const requireAuth = (req: import("express").Request, res: import("express").Response, next: () => void) => {
-		if (!authToken) return next();
+	// Auth: password gate (PICAMBER_PASSWORD) + optional static bearer
+	// (PICAMBER_TOKEN). Neither set → the server stays open. The /auth/* entry
+	// points (/auth/session, /auth/url-token) are registered explicitly below and
+	// are NOT behind requireAuth — they are how a client authenticates in the
+	// first place (a login request obviously cannot carry the credential yet).
+	const auth = readAuthConfig();
+	const extractBearer = (req: import("express").Request): string => {
 		const header = req.headers.authorization ?? "";
-		const bearer = header.startsWith("Bearer ") ? header.slice(7) : "";
-		const queryToken = typeof req.query.token === "string" ? req.query.token : "";
-		if (bearer === authToken || queryToken === authToken) return next();
+		return header.startsWith("Bearer ") ? header.slice(7) : "";
+	};
+	const extractQueryToken = (req: import("express").Request): string =>
+		typeof req.query.token === "string" ? req.query.token : "";
+	const isAuthenticated = (req: import("express").Request): boolean =>
+		checkCredentials(
+			{
+				bearer: extractBearer(req),
+				query: extractQueryToken(req),
+				cookieHeader: req.headers.cookie ?? "",
+			},
+			auth,
+		);
+
+	const requireAuth = (req: import("express").Request, res: import("express").Response, next: () => void) => {
+		if (!isAuthEnabled(auth) || isAuthenticated(req)) return next();
 		res.status(401).json({ error: "unauthorized" });
 	};
 	app.use("/api", requireAuth);
-	app.use("/auth", requireAuth);
 
-	// Temporary request log to discover which opencode endpoints the UI calls.
-	app.use((req, _res, next) => {
-		if (req.path.startsWith("/api"))
-			console.log("[req]", req.method, req.originalUrl);
-		next();
-	});
 
 	// opencode-compatible API + SSE (the vendored UI talks to these).
 	createOpencodeRoutes(app, registry);
@@ -105,10 +124,69 @@ async function main(): Promise<void> {
 	});
 
 
-	// Runtime URL auth token — opencode mints one during bootstrap; the UI
-	// auth yet, so return a stable token.
-	app.post("/auth/url-token", (_req, res) => {
-		res.json({ token: authToken ?? "pichamber-local", expiresAt: Date.now() + 24 * 60 * 60 * 1000 });
+	// --- auth entry points (not behind requireAuth) ---
+
+	// Status check for the vendored password gate. Without a configured
+	// password the gate is a no-op (always authenticated).
+	app.get("/auth/session", (req, res) => {
+		if (!auth.password) {
+			res.json({ authenticated: true });
+			return;
+		}
+		if (isAuthenticated(req)) {
+			res.json({ authenticated: true });
+			return;
+		}
+		res.status(401).json({ error: "unauthorized" });
+	});
+
+	// Password verify → mint a session cookie. A simple per-IP rate limit blunts
+	// brute-force guessing.
+	const RATE_LIMIT_MAX = 5;
+	const RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
+	const failedAttempts = new Map<string, { count: number; resetAt: number }>();
+	app.post("/auth/session", (req, res) => {
+		if (!auth.password) {
+			res.json({ authenticated: true });
+			return;
+		}
+		const ip = req.ip ?? "unknown";
+		const now = Date.now();
+		const existing = failedAttempts.get(ip);
+		if (existing && existing.resetAt <= now) failedAttempts.delete(ip);
+		const current = failedAttempts.get(ip);
+		if (current && current.count >= RATE_LIMIT_MAX) {
+			res.status(429).json({ retryAfter: Math.ceil((current.resetAt - now) / 1000) });
+			return;
+		}
+		const password = typeof req.body?.password === "string" ? req.body.password : "";
+		if (password !== auth.password) {
+			const e = current ?? { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+			e.count += 1;
+			failedAttempts.set(ip, e);
+			res.status(401).json({ error: "unauthorized" });
+			return;
+		}
+		failedAttempts.delete(ip);
+		const sessionId = mintSession();
+		const secure = req.secure || req.headers["x-forwarded-proto"] === "https";
+		res.setHeader("Set-Cookie", [
+			`${SESSION_COOKIE}=${sessionId}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${SESSION_MAX_AGE_SECONDS}${secure ? "; Secure" : ""}`,
+		]);
+		res.json({ authenticated: true });
+	});
+
+	// Runtime URL auth token — used as `?token=` on SSE/WS URLs (which cannot
+	// carry cookies). In password mode only an authenticated session may mint
+	// one; otherwise return the static token (or a benign placeholder in open
+	// mode).
+	app.post("/auth/url-token", (req, res) => {
+		if (auth.password && !isValidSession(parseCookies(req.headers.cookie ?? "")[SESSION_COOKIE])) {
+			res.status(401).json({ error: "unauthorized" });
+			return;
+		}
+		const token = auth.password ? mintUrlToken() : auth.token || "pichamber-local";
+		res.json({ token, expiresAt: Date.now() + URL_TOKEN_TTL_MS });
 	});
 
 	// Static hosting for the built UI + SPA fallback.

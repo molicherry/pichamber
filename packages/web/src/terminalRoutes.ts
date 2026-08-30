@@ -13,6 +13,7 @@ import { Router } from "express";
 import type { Request, Response } from "express";
 import type { Server } from "node:http";
 import { WebSocketServer, WebSocket } from "ws";
+import { checkCredentials, readAuthConfig } from "./auth.js";
 
 const TAG = 1;
 
@@ -79,10 +80,11 @@ class TerminalManager {
 	private readonly sessions = new Map<string, TerminalSession>();
 
 	constructor(server: Server) {
+		const auth = readAuthConfig();
 		const wss = new WebSocketServer({
 			server,
 			path: "/api/terminal/ws",
-			verifyClient: (info: { origin: string }) => {
+			verifyClient: (info: { origin: string; req: import("node:http").IncomingMessage }) => {
 				// Reject cross-origin WebSocket upgrades (CSWSH mitigation).
 				// Extra origins come from the environment, never hardcoded.
 				const origin = info.origin || "";
@@ -90,11 +92,26 @@ class TerminalManager {
 					.split(",")
 					.map((s) => s.trim())
 					.filter(Boolean);
-				return (
+				const originOk =
 					!origin ||
 					origin.startsWith("http://localhost") ||
 					origin.startsWith("http://127.0.0.1") ||
-					extraOrigins.some((o) => origin.includes(o))
+					extraOrigins.some((o) => origin.includes(o));
+				if (!originOk) return false;
+				// The terminal WS upgrade bypasses the /api bearer-auth middleware,
+				// so it must enforce the same auth itself: static token, minted url
+				// token, or a password session cookie.
+				const url = new URL(info.req.url ?? "/", "http://localhost");
+				const queryToken = url.searchParams.get("token") ?? "";
+				const header = info.req.headers.authorization ?? "";
+				const bearer = header.startsWith("Bearer ") ? header.slice(7) : "";
+				return checkCredentials(
+					{
+						bearer,
+						query: queryToken,
+						cookieHeader: info.req.headers.cookie ?? "",
+					},
+					auth,
 				);
 			},
 		});

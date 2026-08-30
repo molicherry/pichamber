@@ -563,6 +563,7 @@ export function createGitRoutes(
 		const dir = dirOf(req, defaultCwd);
 		const ref = typeof req.body?.ref === "string" ? req.body.ref : "";
 		if (!ref) { res.status(400).json({ error: "ref is required" }); return; }
+		if (!isSafeRef(ref)) { res.status(400).json({ error: "invalid ref" }); return; }
 		const r = await gitFull(dir, ["stash", op, ref]);
 		res.json({ success: r.code === 0, ref });
 	};
@@ -588,6 +589,8 @@ export function createGitRoutes(
 		const name = typeof req.body?.name === "string" ? req.body.name : "";
 		const startPoint = typeof req.body?.startPoint === "string" ? req.body.startPoint : undefined;
 		if (!name) { res.status(400).json({ error: "name is required" }); return; }
+		if (!isSafeRef(name)) { res.status(400).json({ error: "invalid branch name" }); return; }
+		if (startPoint && !isSafeRef(startPoint)) { res.status(400).json({ error: "invalid startPoint" }); return; }
 		const args = ["branch", name];
 		if (startPoint) args.push(startPoint);
 		const r = await gitFull(dir, args);
@@ -600,6 +603,7 @@ export function createGitRoutes(
 		const oldName = typeof req.body?.oldName === "string" ? req.body.oldName : "";
 		const newName = typeof req.body?.newName === "string" ? req.body.newName : "";
 		if (!oldName || !newName) { res.status(400).json({ error: "oldName and newName are required" }); return; }
+		if (!isSafeRef(oldName) || !isSafeRef(newName)) { res.status(400).json({ error: "invalid branch name" }); return; }
 		const r = await gitFull(dir, ["branch", "-m", oldName, newName]);
 		if (r.code !== 0) { res.status(500).json({ error: r.stderr || "rename branch failed" }); return; }
 		res.json({ success: true, branch: newName });
@@ -611,6 +615,7 @@ export function createGitRoutes(
 		const name = typeof req.body?.name === "string" ? req.body.name : "";
 		const force = req.body?.force === true;
 		if (!name) { res.status(400).json({ error: "name is required" }); return; }
+		if (!isSafeRef(name)) { res.status(400).json({ error: "invalid branch name" }); return; }
 		const args = ["branch", force ? "-D" : "-d", name];
 		const r = await gitFull(dir, args);
 		if (r.code !== 0) { res.status(500).json({ error: r.stderr || "delete branch failed" }); return; }
