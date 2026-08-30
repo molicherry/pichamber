@@ -93,6 +93,41 @@ function withProject(s: Session): Session {
 	} as Session;
 }
 
+/** The single primary agent pi exposes (pi has no user-defined agents). */
+const buildAgent = {
+	name: "build",
+	description: "Default coding agent",
+	mode: "primary",
+	native: true,
+	permission: [
+		{ permission: "bash", pattern: "*", action: "allow" },
+		{ permission: "edit", pattern: "**", action: "allow" },
+		{ permission: "webfetch", pattern: "**", action: "allow" },
+	],
+};
+
+/** First provider/model from pi models.json, as an opencode `model` ref. */
+async function defaultModel(): Promise<string | undefined> {
+	try {
+		const { default: defaults } = await listModelProviders();
+		const [providerID] = Object.keys(defaults);
+		if (!providerID) return undefined;
+		const modelID = defaults[providerID];
+		return modelID ? `${providerID}/${modelID}` : providerID;
+	} catch {
+		return undefined;
+	}
+}
+
+/** The opencode Config object: the model + agent pi actually has. */
+async function configObject(): Promise<Record<string, unknown>> {
+	const model = await defaultModel();
+	return {
+		...(model ? { model } : {}),
+		agent: { build: buildAgent },
+	};
+}
+
 export function createOpencodeRoutes(
 	app: Express,
 	registry: SessionRegistry,
@@ -353,29 +388,17 @@ export function createOpencodeRoutes(
 	router.get("/opencode/health", (_req, res: Response) => {
 		res.json({ healthy: true });
 	});
-	router.get("/global/config", (_req, res: Response) => {
-		res.json({});
+	router.get("/global/config", async (_req, res: Response) => {
+		res.json(await configObject());
 	});
-	router.get("/config", (_req, res: Response) => {
-		res.json({});
+	router.get("/config", async (_req, res: Response) => {
+		res.json(await configObject());
 	});
 
 	// Agents — the UI gates sending on having at least one primary agent.
 	// Return a single default 'build' agent (pi is the only backend).
 	router.get("/agent", (_req, res: Response) => {
-		res.json([
-			{
-				name: "build",
-				description: "Default coding agent",
-				mode: "primary",
-				native: true,
-				permission: [
-					{ permission: "bash", pattern: "*", action: "allow" },
-					{ permission: "edit", pattern: "**", action: "allow" },
-					{ permission: "webfetch", pattern: "**", action: "allow" },
-				],
-			},
-		]);
+		res.json([buildAgent]);
 	});
 
 	router.get("/config/providers", async (_req, res: Response) => {
