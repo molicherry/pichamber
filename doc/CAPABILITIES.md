@@ -22,7 +22,7 @@
 | I project/worktree | ✅ | project 从 settings 动态读;worktree 走 git 端点 | `opencode.ts`(project) |
 | J mcp | ⚠️ | agent 工具并集通;但 **管理面板端点空** | `opencode.ts:411/414` |
 | K subtask | ✅* | 只读子代理,深度 1(未逐行重审) | `packages/agent/src/subtask.ts` |
-| L provider/model | ⚠️ | `/config/providers` 真;`/config` 空 | `opencode.ts:381/359` |
+| L provider/model | ✅ | `/config/providers` + `/config`(model + agent)均已接上 | `opencode.ts` |
 | 用量统计 | ✅ | session tokens + 消息 tokens 已接上(累计 + 重启还原) | `SessionStore.ts`、`sessionRegistry.ts` |
 
 `✅*` = 核心链路已验证,但该域的 agent 层完整性未在本轮逐行重审。
@@ -55,8 +55,8 @@
 | GET /event · /global/event | ✅ | SSE |
 | GET /global/health | ⚠️ | `{ok:true}`,shape 未对齐 | `opencode.ts:347` |
 | GET /opencode/health | ✅ | `{healthy:true}` |
-| GET /global/config | ❌ | 空 `{}` | `opencode.ts:356` |
-| GET /config | ❌ | 空 `{}` | `opencode.ts:359` |
+| GET /global/config | ✅ | 真实 config(model + agent) | `opencode.ts:356` |
+| GET /config | ✅ | 真实 config(model + agent) | `opencode.ts:359` |
 | GET /agent | ⚠️ | 硬编码单个 `build` agent,permission 全 allow | `opencode.ts:365` |
 | GET /config/providers | ✅ | pi models 映射 | `opencode.ts:381` |
 | GET/PUT /config/settings | ✅ | `~/.config/openchamber/settings.json` | `opencode.ts:394/397` |
@@ -109,7 +109,7 @@
 1. **✅ 认证** — v0.1.1 已实现(密码门 + session + url token)。
 2. **J mcp 管理面板** — `/mcp`、`/config/mcp` 空;agent 能用 MCP 工具,但 UI 面板看不到/配不了。
 3. **G lsp 面板** — `/lsp` 空;要实时诊断面板需在 web 层自造常驻 LSP server(重)。
-4. **L config** — `/config`、`/global/config` 空;只有 `/config/providers` 真。
+4. **L config** — ✅ 已修(`/config`、`/global/config` 返回真实 model + agent;commands/snippets 仍空,无 pi 等价物)。
 5. **用量统计** — ✅ 已修(列表 + 单会话 + 消息 tokens 均返回真实值,重启可还原)。
 6. **/agent** — 硬编码单个 `build` agent + 全 allow 权限,未从配置读。
 7. **GitHub 面板** — 仅 3 端点,issues/search/commits 等未接。
