@@ -20,7 +20,7 @@
 | G lsp | ❌ | `/lsp` 返回空,无常驻 server | `opencode.ts:406` |
 | H terminal | ✅ | 真 PTY(node-pty);但 shells 硬编码、touch/appearance 为 stub | `terminalRoutes.ts:337/366/394` |
 | I project/worktree | ✅ | project 从 settings 动态读;worktree 走 git 端点 | `opencode.ts`(project) |
-| J mcp | ⚠️ | agent 工具并集通;但 **管理面板端点空** | `opencode.ts:411/414` |
+| J mcp | ✅ | 工具并集 + 面板端点已接(状态 best-effort,连接/断开/oauth 未接) | `opencode.ts` |
 | K subtask | ✅* | 只读子代理,深度 1(未逐行重审) | `packages/agent/src/subtask.ts` |
 | L provider/model | ✅ | `/config/providers` + `/config`(model + agent)均已接上 | `opencode.ts` |
 | 用量统计 | ✅ | session tokens + 消息 tokens 已接上(累计 + 重启还原) | `SessionStore.ts`、`sessionRegistry.ts` |
@@ -61,8 +61,8 @@
 | GET /config/providers | ✅ | pi models 映射 | `opencode.ts:381` |
 | GET/PUT /config/settings | ✅ | `~/.config/openchamber/settings.json` | `opencode.ts:394/397` |
 | GET /lsp | ❌ | 空 `[]`(pi 无常驻 LSP server) | `opencode.ts:406` |
-| GET /mcp | ❌ | 空 `{}`(MCP 状态未接 pi-mcp-adapter) | `opencode.ts:411` |
-| GET /config/mcp | ❌ | 空 `[]` | `opencode.ts:414` |
+| GET /mcp | ✅ | 从 mcp.json + 缓存 best-effort 状态(disabled/connected) | `opencode.ts` |
+| GET /config/mcp | ✅ | 从 mcp.json 映射 ServerEntry→opencode 配置 | `opencode.ts` |
 | GET /project | ✅ | 从 settings 动态读 |
 | GET /project/current | ✅ | 动态解析当前 cwd |
 | GET /path | ✅ | config→`.config/openchamber`(与 settings 一致),state→pi agent dir | `opencode.ts:449` |
@@ -107,7 +107,7 @@
 ## 已知缺口(诚实版,按优先级)
 
 1. **✅ 认证** — v0.1.1 已实现(密码门 + session + url token)。
-2. **J mcp 管理面板** — `/mcp`、`/config/mcp` 空;agent 能用 MCP 工具,但 UI 面板看不到/配不了。
+2. **J mcp 管理面板** — ✅ 部分接:状态 + 配置已接;connect/disconnect/oauth 动作端点仍未接。
 3. **G lsp 面板** — `/lsp` 空;要实时诊断面板需在 web 层自造常驻 LSP server(重)。
 4. **L config** — ✅ 已修(`/config`、`/global/config` 返回真实 model + agent;commands/snippets 仍空,无 pi 等价物)。
 5. **用量统计** — ✅ 已修(列表 + 单会话 + 消息 tokens 均返回真实值,重启可还原)。
