@@ -4,7 +4,9 @@
  * API keys are never exposed — only id/name/metadata are returned.
  */
 
-import { ModelRuntime } from "@earendil-works/pi-coding-agent";
+import { ModelRuntime, getAgentDir } from "@earendil-works/pi-coding-agent";
+import fs from "node:fs";
+import path from "node:path";
 
 interface PiModel {
 	id: string;
@@ -32,9 +34,33 @@ export interface OpenCodeModelList {
 	default: Record<string, string>;
 }
 
+/** Provider ids the user actually configured in models.json. */
+function readConfiguredProviderIds(): Set<string> {
+	try {
+		const raw = fs.readFileSync(path.join(getAgentDir(), "models.json"), "utf8");
+		const parsed: unknown = JSON.parse(raw);
+		const providers =
+			parsed && typeof parsed === "object" && !Array.isArray(parsed)
+				? (parsed as Record<string, unknown>).providers
+				: undefined;
+		if (providers && typeof providers === "object" && !Array.isArray(providers)) {
+			return new Set(Object.keys(providers as Record<string, unknown>));
+		}
+	} catch {
+		// unreadable/absent models.json → no configured providers
+	}
+	return new Set();
+}
+
 export async function listModelProviders(): Promise<OpenCodeModelList> {
 	const runtime = await ModelRuntime.create();
-	const providers = runtime.getProviders() as unknown as PiProvider[];
+	const configuredIds = readConfiguredProviderIds();
+	// Only list providers the user actually configured — pi's getProviders()
+	// also returns its built-in catalog (40+ providers), which would show
+	// unusable ghosts in the model picker.
+	const providers = (runtime.getProviders() as unknown as PiProvider[]).filter(
+		(p) => configuredIds.has(p.id),
+	);
 	const providersOut: OpenCodeModelList["providers"] = [];
 	const defaults: Record<string, string> = {};
 
