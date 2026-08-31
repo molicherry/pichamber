@@ -1,0 +1,55 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  id-token: write # trusted publishing: mint the OIDC token npm exchanges for publish auth
+  contents: read
+
+jobs:
+  publish:
+    name: Build and publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      # Node 24 ships npm 11.x, which trusted publishing requires.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build distributable
+        run: node scripts/build-publish.cjs
+
+      # No NPM_TOKEN secret — `id-token: write` + registry-url is enough.
+      - name: Verify tag matches package version
+        run: |
+          tag="${{ github.ref_name }}"
+          pkg="v$(node -p "require('./dist/package.json').version")"
+          if [ "$tag" != "$pkg" ]; then
+            echo "::error::tag '$tag' does not match package version '$pkg'"
+            exit 1
+          fi
+
+      - name: Determine npm dist-tag
+        id: disttag
+        run: |
+          if [[ "${{ github.ref_name }}" == *-* ]]; then
+            echo "value=next" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish
+        run: npm publish --access public --tag "${{ steps.disttag.outputs.value }}"
+        working-directory: dist

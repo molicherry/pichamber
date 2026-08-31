@@ -14,6 +14,7 @@
   "scripts": {
     "type-check": "bun run --filter '*' type-check",
     "lint": "bun run --filter '*' lint",
-    "test": "bun run --filter '*' test"
+    "test": "bun run --filter '*' test",
+    "build:publish": "node scripts/build-publish.cjs"
   }
 }
