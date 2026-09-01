@@ -61,12 +61,16 @@ function toOpencodeSession(h: SessionHandle): Session {
 	};
 }
 
-const CONFIG_DIR = path.join(process.env.HOME ?? "/root", ".config", "openchamber");
-const SETTINGS_PATH = path.join(CONFIG_DIR, "settings.json");
+function configDir(): string {
+	return path.join(process.env.HOME ?? "/root", ".config", "openchamber");
+}
+function settingsPath(): string {
+	return path.join(configDir(), "settings.json");
+}
 
 function readSettings(): Record<string, unknown> {
 	try {
-		const parsed: unknown = JSON.parse(fs.readFileSync(SETTINGS_PATH, "utf8"));
+		const parsed: unknown = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
 		// Parse at the boundary: settings must be a plain object (never scalar/array).
 		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
 		return parsed as Record<string, unknown>;
@@ -76,11 +80,12 @@ function readSettings(): Record<string, unknown> {
 }
 
 function writeSettings(settings: Record<string, unknown>): void {
-	fs.mkdirSync(path.dirname(SETTINGS_PATH), { recursive: true });
+	const target = settingsPath();
+	fs.mkdirSync(path.dirname(target), { recursive: true });
 	// Atomic write: temp file + rename so a crash can't leave a partial/empty file.
-	const tmp = `${SETTINGS_PATH}.${process.pid}.${Date.now()}.tmp`;
+	const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
 	fs.writeFileSync(tmp, JSON.stringify(settings, null, 2));
-	fs.renameSync(tmp, SETTINGS_PATH);
+	fs.renameSync(tmp, target);
 }
 
 function withProject(s: Session): Session {
@@ -134,8 +139,8 @@ async function configObject(): Promise<Record<string, unknown>> {
 	};
 }
 
-const MCP_CONFIG_PATH = path.join(resolveAgentDir(), "mcp.json");
-const MCP_CACHE_PATH = path.join(resolveAgentDir(), "mcp-cache.json");
+function mcpConfigPath(): string { return path.join(resolveAgentDir(), "mcp.json"); }
+function mcpCachePath(): string { return path.join(resolveAgentDir(), "mcp-cache.json"); }
 
 function readJsonObject(p: string): Record<string, unknown> | null {
 	try {
@@ -184,7 +189,7 @@ function toOpencodeMcpConfig(entry: Record<string, unknown>): Record<string, unk
 
 /** Configured MCP servers from pi-mcp-adapter's mcp.json. */
 function readMcpServers(): Record<string, Record<string, unknown>> {
-	const config = readJsonObject(MCP_CONFIG_PATH);
+	const config = readJsonObject(mcpConfigPath());
 	const servers = config?.mcpServers;
 	if (servers && typeof servers === "object" && !Array.isArray(servers)) {
 		return servers as Record<string, Record<string, unknown>>;
@@ -194,7 +199,7 @@ function readMcpServers(): Record<string, Record<string, unknown>> {
 
 /** Server names that have cached tool metadata (connected at least once). */
 function cachedMcpServerNames(): Set<string> {
-	const cache = readJsonObject(MCP_CACHE_PATH);
+	const cache = readJsonObject(mcpCachePath());
 	const servers = cache?.servers;
 	if (servers && typeof servers === "object" && !Array.isArray(servers)) {
 		return new Set(Object.keys(servers as Record<string, unknown>));
@@ -538,7 +543,7 @@ export function createOpencodeRoutes(
 		res.json({
 			home,
 			state: resolveAgentDir(),
-			config: CONFIG_DIR,
+			config: configDir(),
 			worktree: registry.cwd,
 			directory: registry.cwd,
 		});

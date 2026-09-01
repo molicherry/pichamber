@@ -10,7 +10,6 @@ import { SessionRegistry } from "@pichamber/agent";
 import { createOpencodeRoutes } from "./opencode.js";
 import { createGitRoutes } from "./gitRoutes.js";
 import { createGithubRoutes } from "./githubRoutes.js";
-import { createTerminalRoutes } from "./terminalRoutes.js";
 import { detectPiRuntime, formatPiRuntimeWarning } from "./piRuntime.js";
 import {
 	checkCredentials,
@@ -25,20 +24,41 @@ import {
 	URL_TOKEN_TTL_MS,
 } from "./auth.js";
 import http from "node:http";
+import { pathToFileURL } from "node:url";
 
-async function main(): Promise<void> {
+export interface PichamberServerOptions {
+	cwd?: string;
+	uiDist?: string;
+	port?: number;
+	host?: string;
+	registry?: SessionRegistry;
+	/** Tests may disable the native terminal surface; production defaults to enabled. */
+	terminal?: boolean;
+}
+
+export interface PichamberServerRuntime {
+	app: import("express").Express;
+	server: http.Server;
+	registry: SessionRegistry;
+	start: (port?: number, host?: string) => Promise<{ port: number; host: string; url: string }>;
+	stop: () => Promise<void>;
+}
+
+export async function createPichamberServer(
+	options: PichamberServerOptions = {},
+): Promise<PichamberServerRuntime> {
 	// The agent works against PICAMBER_WORKSPACE when set (the mounted
 	// workspace in Docker); otherwise fall back to the repo root (local dev).
-	const cwd = process.env.PICAMBER_WORKSPACE
+	const cwd = options.cwd ?? (process.env.PICAMBER_WORKSPACE
 		? path.resolve(process.env.PICAMBER_WORKSPACE)
-		: path.resolve(process.cwd(), "../..");
+		: path.resolve(process.cwd(), "../.."));
 
 	// Detect pi runtime deps (plugins/extensions/models.json) up front and
 	// warn loudly — silent degradation is worse than a clear startup error.
 	const piRuntime = detectPiRuntime();
 	const piWarning = formatPiRuntimeWarning(piRuntime);
 	if (piWarning) console.warn(piWarning);
-	const registry = new SessionRegistry({
+	const registry = options.registry ?? new SessionRegistry({
 		cwd,
 		tools: [
 			"read", "grep", "find", "ls", "write", "edit", "bash", "todo", "subtask",
@@ -106,24 +126,24 @@ async function main(): Promise<void> {
 	// GitHub PR surface (gh CLI).
 	createGithubRoutes(app, cwd);
 
-	// Terminal surface (shell sessions + WebSocket I/O).
+	// Terminal surface (shell sessions + WebSocket I/O). Load it lazily so HTTP
+	// contract tests and fast CI do not require a locally-built node-pty binary.
+	// The full runtime scenario and packed-artifact smoke still exercise real PTY.
 	const server = http.createServer(app);
-	createTerminalRoutes(app, server);
+	if (options.terminal !== false) {
+		const { createTerminalRoutes } = await import("./terminalRoutes.js");
+		createTerminalRoutes(app, server);
+	}
 
-	// Stub for openchamber-owned endpoints the UI bootstraps
-	// (config/settings, fs, quota, command, mcp, github, git, notifications,
-	// session-folders, permission-auto-accept, etc.). Return benign empty shapes.
+	// Unknown API operations are explicit failures. A success-shaped fallback can
+	// make an unimplemented capability look qualified and can clear authoritative
+	// UI state, so it is intentionally forbidden.
 	app.use("/api", (req, res) => {
-		if (req.path.includes("/health")) {
-			res.json({ ok: true, pi: piRuntime });
-			return;
-		}
-		if (req.path.includes("/event") || req.path.includes("/stream")) {
-			// Long-lived streams should not get a JSON stub; leave the connection idle.
-			return;
-		}
-		if (req.method === "GET") res.json([]);
-		else res.status(200).json({});
+		res.status(404).json({
+			error: "unsupported endpoint",
+			method: req.method,
+			path: req.path,
+		});
 	});
 
 
@@ -194,22 +214,48 @@ async function main(): Promise<void> {
 
 	// Static hosting for the built UI + SPA fallback.
 	const uiDist =
-		process.env.UI_DIST ?? path.resolve(process.cwd(), "../ui/dist");
+		options.uiDist ?? process.env.UI_DIST ?? path.resolve(process.cwd(), "../ui/dist");
 	app.use(express.static(uiDist));
 	app.get(/^(?!\/session|\/event|\/api).*/, (_req, res) => {
 		res.sendFile(path.join(uiDist, "index.html"));
 	});
 
-	const port = Number(process.env.PORT ?? 8787);
-	server.listen(port, () => {
-		console.log(
-			`pichamber opencode server listening on http://localhost:${port}`,
-		);
-	});
+	const defaultPort = options.port ?? Number(process.env.PORT ?? 8787);
+	const defaultHost = options.host ?? process.env.HOST ?? "0.0.0.0";
+	return {
+		app,
+		server,
+		registry,
+		start: (port = defaultPort, host = defaultHost) =>
+			new Promise((resolve, reject) => {
+				server.once("error", reject);
+				server.listen(port, host, () => {
+					server.off("error", reject);
+					const address = server.address();
+					const boundPort = typeof address === "object" && address ? address.port : port;
+					const browserHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+					console.log(`pichamber opencode server listening on http://${host}:${boundPort}`);
+					resolve({ port: boundPort, host, url: `http://${browserHost}:${boundPort}` });
+				});
+			}),
+		stop: () =>
+			new Promise((resolve, reject) => {
+				if (!server.listening) { resolve(); return; }
+				server.close((error) => error ? reject(error) : resolve());
+			}),
+	};
 }
 
-main().catch((err: unknown) => {
-	const message = err instanceof Error ? err.message : String(err);
-	console.error("Failed to start server:", message);
-	process.exit(1);
-});
+async function main(): Promise<void> {
+	const runtime = await createPichamberServer();
+	await runtime.start();
+}
+
+const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
+if (import.meta.url === invokedPath) {
+	main().catch((err: unknown) => {
+		const message = err instanceof Error ? err.message : String(err);
+		console.error("Failed to start server:", message);
+		process.exit(1);
+	});
+}
