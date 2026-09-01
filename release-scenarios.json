@@ -11,7 +11,7 @@
   },
   "capabilities": [
     { "id": "static-validation", "status": "supported", "description": "Workspace type-check, lint, tests, and production build" },
-    { "id": "ui-stable-contracts", "status": "supported", "description": "Isolated stable UI sync, runtime fetch, route serialization, and authentication contract groups" },
+    { "id": "ui-stable-contracts", "status": "supported", "description": "Entire vendored UI test suite run one-file-per-process, with 5 explicit vendored/rebrand known failures" },
     { "id": "agent-adapter", "status": "supported", "description": "pi-backed agent contracts and event mapping" },
     { "id": "session-persistence", "status": "supported", "description": "Single-workspace session store, restoration, tokens, todo, permission, question, and abort contracts" },
     { "id": "http-auth-sse", "status": "supported", "description": "HTTP routes, authentication, SSE lifecycle, and explicit unknown responses" },
@@ -36,8 +36,8 @@
       "profiles": ["ci", "full", "backend"], "required": true, "tags": ["static", "lint"], "prerequisites": ["bun=1.4.0"], "platforms": ["linux-x64"], "timeoutMs": 180000, "stage": "source", "capabilities": ["static-validation"], "passCriteria": "All workspace lint scripts exit zero"
     },
     {
-      "id": "ui.stable-contract-groups", "description": "Stable UI contract groups run in separate Bun processes to avoid vendored global-mock interference", "command": ["node", "scripts/release/scenarios/ui-stable-tests.cjs"],
-      "profiles": ["full"], "required": true, "tags": ["ui", "sync", "runtime", "auth"], "prerequisites": ["bun=1.4.0"], "platforms": ["linux-x64"], "timeoutMs": 180000, "stage": "source", "capabilities": ["static-validation", "ui-stable-contracts", "http-auth-sse"], "passCriteria": "Reviewed UI sync, runtime fetch, router, and authentication tests pass in isolated processes"
+      "id": "ui.isolated-full-suite", "description": "Every vendored UI test file runs one-per-Bun-process to avoid global-mock interference; the 5 vendored/rebrand known failures are explicit", "command": ["node", "scripts/release/scenarios/ui-isolated-tests.cjs"],
+      "profiles": ["full"], "required": true, "tags": ["ui", "sync", "runtime", "auth"], "prerequisites": ["bun=1.4.0"], "platforms": ["linux-x64"], "timeoutMs": 900000, "stage": "source", "capabilities": ["static-validation", "ui-stable-contracts", "http-auth-sse"], "passCriteria": "All 326 UI test files pass in isolation except the 5 explicitly registered vendored/rebrand known failures"
     },
     {
       "id": "agent.contracts", "description": "Agent mapping and SessionStore contracts pass", "command": ["bun", "test", "packages/agent/src"],

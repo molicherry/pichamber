@@ -15,7 +15,7 @@ CI 只跑其中带 `ci` profile 的快速子集（5 项），**不产生发布�
 |---|---|:--:|:--:|
 | 1 | static.type-check | source | ✅ | ✅ |
 | 2 | static.lint | source | ✅ | ✅ |
-| 3 | ui.stable-contract-groups | source | — | ✅ |
+| 3 | ui.isolated-full-suite | source | — | ✅ |
 | 4 | agent.contracts | source | ✅ | ✅ |
 | 5 | agent.pi-session-compatibility | source | — | ✅ |
 | 6 | web.http-auth-sse | source | ✅ | ✅ |
@@ -44,12 +44,19 @@ CI 只跑其中带 `ci` profile 的快速子集（5 项），**不产生发布�
 - **通过标准**：退出码 0；vendored UI 的既有 warning 不阻断（不修改 `packages/ui/src`）。
 - **前置**：Bun 1.4.0。
 
-### 3. ui.stable-contract-groups
+### 3. ui.isolated-full-suite
 
-- **测什么**：4 组稳定的 UI 契约测试——sync 事件管道、runtime fetch、路由序列化、认证状态机。
-- **怎么测**：`node scripts/release/scenarios/ui-stable-tests.cjs`，每个文件**独立 Bun 进程**执行。
-- **为什么隔离**：vendored UI 测试含进程级 `mock.module`，全量同进程跑会互相污染（曾 312 失败）。稳定组单独进程跑保证确定性，且**不声称整个 326 文件套件绿**。
-- **通过标准**：4 个文件全部退出码 0。
+- **测什么**：**全部 326 个 vendored UI 测试文件**，每个文件独立 Bun 进程跑（避免进程级 `mock.module` 互相污染）。
+- **怎么测**：`node scripts/release/scenarios/ui-isolated-tests.cjs`。
+- **为什么隔离**：同进程全量跑会有约 370 个假失败（mock 污染）；隔离跑后只剩 5 个真失败，全部是 vendored 上游或 rebrand 副作用，不是 pichamber 产品 bug。
+- **已知失败（显式登记，不静默）**：
+  - `SessionAuthGate.behavior.test.tsx` — vendored 上游：手写 React mock 缺 `useSyncExternalStore`；
+  - `MarkdownRendererImpl.performance.test.tsx` — vendored 上游：缓存计数断言脆弱（1≠0）；
+  - `desktopRecoveryConfig.test.ts` — rebrand 副作用：测试断言 `OpenCode`，产品已 rebrand 为 `pi`；
+  - `shortcuts.test.ts` — vendored 上游：旧测试断言 `mod`，上游已改为 `mod+alt`；
+  - `document-attachments.test.ts` — rebrand 副作用：测试断言 `OpenChamber`，产品已 rebrand 为 `pichamber`。
+- **通过标准**：除上述 5 个登记项外，其余文件全部退出码 0；任何未登记的失败都会阻断。清单反向校验：若某已知失败项突然变绿，脚本会提示从清单移除。
+- **同步上游时**：重新评估这 5 项（`sync openchamber → python3 scripts/rebrand.py → 跑本场景`）。
 
 ### 4. agent.contracts
 
