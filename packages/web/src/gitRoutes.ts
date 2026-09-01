@@ -366,6 +366,12 @@ export function createGitRoutes(
 		});
 	});
 
+	// Identity profile list — pichamber has no multi-profile management, so it
+	// honestly reports an empty list; the active identity is /git/current-identity.
+	router.get("/git/identities", (_req: Request, res: Response) => {
+		res.json([]);
+	});
+
 	router.get("/git/global-identity", async (_req: Request, res: Response) => {
 		res.json({ userName: null, userEmail: null, sshCommand: null });
 	});
