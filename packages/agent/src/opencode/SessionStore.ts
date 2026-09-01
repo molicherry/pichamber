@@ -33,6 +33,8 @@ export interface SessionStoreOptions {
   model?: { providerID: string; modelID: string };
   /** Per-session todo state (owned by the registry); mutations emit todo_updated. */
   todoState?: TodoState;
+  /** Archived epoch timestamp (0 or undefined = active). Persisted by the registry. */
+  archived?: number;
 }
 
 /**
@@ -79,7 +81,7 @@ export class SessionStore {
         : {}),
       version: "0",
       tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
-      time: { created: Date.now(), updated: Date.now() },
+      time: { created: Date.now(), updated: Date.now(), ...(options.archived !== undefined ? { archived: options.archived } : {}) },
     };
     if (options.todoState) {
       this.todoState = options.todoState;
@@ -100,6 +102,20 @@ export class SessionStore {
 
   getSession(): Session {
     return this.session;
+  }
+
+  /** Rename the session (persisted by the registry via SessionManager). */
+  setTitle(title: string): void {
+    this.session.title = title;
+    this.session.time.updated = Date.now();
+    this.emit({ type: "session_updated" });
+  }
+
+  /** Set the archived timestamp (0 restores to active). */
+  setArchived(archived: number): void {
+    this.session.time.archived = archived;
+    this.session.time.updated = Date.now();
+    this.emit({ type: "session_updated" });
   }
 
   getStatus(): "busy" | "idle" {

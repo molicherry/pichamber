@@ -57,7 +57,7 @@ function toOpencodeSession(h: SessionHandle): Session {
 		title: h.title,
 		version: "0",
 		tokens: h.tokens,
-		time: { created: h.createdAt, updated: h.updatedAt },
+		time: { created: h.createdAt, updated: h.updatedAt, ...(h.archived !== undefined ? { archived: h.archived } : {}) },
 	};
 }
 
@@ -339,6 +339,32 @@ export function createOpencodeRoutes(
 		res.status(204).end();
 	});
 
+	// Rename / archive / restore (SDK v1 session.update → PATCH /session/:id).
+	// time.archived: positive timestamp = archived; 0 = active (falsy sentinel).
+	router.patch("/session/:id", async (req: Request, res: Response) => {
+		const id = paramId(req);
+		const body = (req.body ?? {}) as { title?: unknown; time?: { archived?: unknown } };
+		if (typeof body.title === "string" && body.title.trim()) {
+			await registry.rename(id, body.title.trim());
+		}
+		if (body.time && typeof body.time.archived === "number") {
+			await registry.setArchived(id, body.time.archived);
+		}
+		const rt = await getRuntime(id);
+		if (!rt) {
+			res.status(404).json({ error: "session not found" });
+			return;
+		}
+		res.json(withProject(rt.store.getSession()));
+	});
+
+	// Permanent delete (SDK v1 session.delete → DELETE /session/:id).
+	router.delete("/session/:id", async (req: Request, res: Response) => {
+		const id = paramId(req);
+		const ok = await registry.remove(id);
+		res.json(ok);
+	});
+
 	// --- SSE (fan out across every live runtime) ---
 
 	const sseHandler = (req: Request, res: Response) => {
@@ -453,6 +479,23 @@ export function createOpencodeRoutes(
 		const first = Array.isArray(answers) && Array.isArray(answers[0]) ? answers[0] : [];
 		const value = first.length > 0 ? String(first[0]) : "";
 		const ok = registry.permissionBroker.respond(requestId, true, value);
+		res.json(ok);
+	});
+
+	// Question reply/reject — SDK v1 paths carry no session in the URL.
+	// (The vendored UI's `question.reply`/`question.reject` call /question/:id/...).
+	router.post("/question/:requestId/reply", (req: Request, res: Response) => {
+		const requestId = typeof req.params["requestId"] === "string" ? req.params["requestId"] : "";
+		const answers = req.body?.answers;
+		const first = Array.isArray(answers) && Array.isArray(answers[0]) ? answers[0] : [];
+		const value = first.length > 0 ? String(first[0]) : "";
+		const ok = registry.permissionBroker.respond(requestId, true, value);
+		res.json(ok);
+	});
+
+	router.post("/question/:requestId/reject", (req: Request, res: Response) => {
+		const requestId = typeof req.params["requestId"] === "string" ? req.params["requestId"] : "";
+		const ok = registry.permissionBroker.respond(requestId, false);
 		res.json(ok);
 	});
 

@@ -38,7 +38,7 @@ async function server(auth: { password?: string; token?: string } = {}) {
 	});
 	runtimes.push(runtime);
 	const started = await runtime.start(0);
-	return { root, home, workspace, url: started.url };
+	return { root, home, workspace, url: started.url, registry: runtime.registry };
 }
 
 describe("createPichamberServer", () => {
@@ -90,5 +90,65 @@ describe("createPichamberServer", () => {
 			throw new Error("URL token response did not contain a token");
 		}
 		expect((await fetch(`${second.url}/api/opencode/health?token=${encodeURIComponent(tokenPayload.token)}`)).status).toBe(200);
+	});
+
+	it("supports session rename/archive/restore/delete and question reply/reject contracts", async () => {
+		const state = await server();
+		const { url, registry } = state;
+
+		const created = await fetch(`${url}/api/session`, { method: "POST" });
+		const session = (await created.json()) as { id: string };
+		const id = session.id;
+
+		const renamed = await fetch(`${url}/api/session/${id}`, {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ title: "Renamed Session" }),
+		});
+		expect(renamed.status).toBe(200);
+		expect(((await renamed.json()) as { title: string }).title).toBe("Renamed Session");
+		const refetched = await fetch(`${url}/api/session/${id}`);
+		expect(((await refetched.json()) as { title: string }).title).toBe("Renamed Session");
+
+		const archived = await fetch(`${url}/api/session/${id}`, {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ time: { archived: 1234567890 } }),
+		});
+		expect(((await archived.json()) as { time: { archived: number } }).time.archived).toBe(1234567890);
+
+		const restored = await fetch(`${url}/api/session/${id}`, {
+			method: "PATCH",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ time: { archived: 0 } }),
+		});
+		expect(((await restored.json()) as { time: { archived: number } }).time.archived).toBe(0);
+
+		let questionId = "";
+		const unsub = registry.permissionBroker.subscribe((p) => { questionId = p.id; });
+		const answerPromise = registry.permissionBroker.request({ sessionId: id, kind: "input", title: "Test question" });
+		unsub();
+		expect(questionId).toBeTruthy();
+		const reply = await fetch(`${url}/api/question/${questionId}/reply`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ answers: [["the answer"]] }),
+		});
+		expect(reply.status).toBe(200);
+		expect(await reply.json()).toBe(true);
+		expect(await answerPromise).toBe("the answer");
+
+		let rejectId = "";
+		const unsub2 = registry.permissionBroker.subscribe((p) => { rejectId = p.id; });
+		const rejectPromise = registry.permissionBroker.request({ sessionId: id, kind: "confirm", title: "Confirm?" });
+		unsub2();
+		const reject = await fetch(`${url}/api/question/${rejectId}/reject`, { method: "POST" });
+		expect(await reject.json()).toBe(true);
+		expect(await rejectPromise).toBe(false);
+
+		const del = await fetch(`${url}/api/session/${id}`, { method: "DELETE" });
+		expect(del.status).toBe(200);
+		expect(await del.json()).toBe(true);
+		expect((await fetch(`${url}/api/session/${id}`)).status).toBe(404);
 	});
 });

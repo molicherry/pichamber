@@ -4,6 +4,7 @@
  * store for persistence and discovery; no new database.
  */
 
+import fs from "node:fs";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { AgentClient } from "./contracts/client.js";
 import { createAgentClient } from "./pi/PiAgentClient.js";
@@ -31,6 +32,7 @@ export interface SessionHandle {
 	updatedAt: number;
 	messageCount: number;
 	tokens: SessionTokens;
+	archived?: number;
 }
 
 /** A live session: the agent client plus its opencode-model store. */
@@ -40,6 +42,7 @@ export interface SessionRuntime {
 	directory: string;
 	client: AgentClient;
 	store: SessionStore;
+	manager: SessionManager;
 }
 
 export interface SessionRegistryOptions {
@@ -76,8 +79,11 @@ export class SessionRegistry {
 		const infos = await SessionManager.list(this.opts.cwd);
 		return infos.map((info) => {
 			let tokens: SessionTokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
+			let archived: number | undefined;
 			try {
-				tokens = sumSessionTokens(SessionManager.open(info.path));
+				const manager = SessionManager.open(info.path);
+				tokens = sumSessionTokens(manager);
+				archived = readArchived(manager);
 			} catch {
 				// Unreadable session → zero totals (never fail the whole list).
 			}
@@ -91,6 +97,7 @@ export class SessionRegistry {
 				updatedAt: info.modified.getTime(),
 				messageCount: info.messageCount,
 				tokens,
+				...(archived !== undefined ? { archived } : {}),
 			};
 		});
 	}
@@ -135,6 +142,47 @@ export class SessionRegistry {
 		}
 	}
 
+	/** Rename a session (persisted via session_info). Returns the updated runtime. */
+	async rename(id: string, title: string): Promise<SessionRuntime | null> {
+		const rt = this.runtimes.get(id) ?? (await this.open(id));
+		if (!rt) return null;
+		rt.manager.appendSessionInfo(title);
+		rt.store.setTitle(title);
+		return rt;
+	}
+
+	/** Set the archived timestamp (0 restores to active). Persisted via a custom entry. */
+	async setArchived(id: string, archived: number): Promise<SessionRuntime | null> {
+		const rt = this.runtimes.get(id) ?? (await this.open(id));
+		if (!rt) return null;
+		rt.manager.appendCustomEntry("pichamber:archive", { archived });
+		rt.store.setArchived(archived);
+		return rt;
+	}
+
+	/** Permanently delete a session (removes its JSONL file and any live runtime). */
+	async remove(id: string): Promise<boolean> {
+		const rt = this.runtimes.get(id);
+		if (rt) {
+			rt.store.stop();
+			try {
+				await rt.client.dispose();
+			} catch {
+				// disposal is best-effort
+			}
+			this.runtimes.delete(id);
+		}
+		const infos = await SessionManager.list(this.opts.cwd);
+		const info = infos.find((i) => i.id === id);
+		if (!info) return rt !== undefined;
+		try {
+			fs.rmSync(info.path);
+			return true;
+		} catch {
+			return false;
+		}
+	}
+
 	/** Subscribe to changes from every live runtime (for SSE fan-out). */
 	subscribeAll(
 		listener: (change: StoreChange, id: string) => void,
@@ -154,6 +202,7 @@ export class SessionRegistry {
 		if (existing) return existing;
 
 		const todoState = new TodoState();
+		const archived = readArchived(manager);
 
 		// Restore persisted todos (stored as a custom session entry, latest wins).
 		const entries = manager.getEntries();
@@ -189,6 +238,7 @@ export class SessionRegistry {
 			title: titleHint ?? manager.getSessionName() ?? "New session",
 			directory: this.opts.cwd,
 			todoState,
+			...(archived !== undefined ? { archived } : {}),
 		});
 
 		// Best-effort text-level history restoration on reopen.
@@ -210,6 +260,7 @@ export class SessionRegistry {
 			directory: this.opts.cwd,
 			client,
 			store,
+			manager,
 		};
 		this.runtimes.set(id, runtime);
 		return runtime;
@@ -249,4 +300,17 @@ function usageToTokens(usage: unknown): SessionTokens {
 
 function toNumber(v: unknown): number {
 	return typeof v === "number" ? v : 0;
+}
+
+/** Read the latest persisted archived marker from a session's custom entries. */
+function readArchived(manager: SessionManager): number | undefined {
+	const entries = manager.getEntries();
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (entry?.type === "custom" && entry.customType === "pichamber:archive") {
+			const data = (entry as { data?: unknown }).data as { archived?: unknown } | undefined;
+			if (typeof data?.archived === "number") return data.archived;
+		}
+	}
+	return undefined;
 }
