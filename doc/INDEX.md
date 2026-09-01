@@ -9,6 +9,7 @@
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | **架构规范(唯一事实来源)**:分层边界、不偏移红线、rebrand 规则、git 提交范围 |
 | [CAPABILITIES.md](./CAPABILITIES.md) | opencode 兼容端点/能力的实现状态清单(✅/⚠️/❌),用于同步更新 openchamber 时 diff。含面域总览(A–L)、端点明细、已知待办、同步流程 |
 | [RELEASE_PROCESS.md](./RELEASE_PROCESS.md) | 本地发布资格门禁:支持矩阵、场景清单、证据格式、无上传约束、发布命令与失败恢复 |
+| [RELEASE_TESTS.md](./RELEASE_TESTS.md) | 本地发布资格测试项逐项梳理:测什么 / 怎么测 / 通过标准,与 `release-scenarios.json` 对应 |
 
 ## 其他文档位置
 
