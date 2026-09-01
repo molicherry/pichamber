@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "profiles": ["ci", "full", "backend", "runtime", "browser", "artifact", "gate-self-test"],
+  "supportedMatrix": {
+    "platforms": ["linux-x64"],
+    "node": "22.x (minimum supported major must execute qualification)",
+    "bun": "1.4.0",
+    "surfaces": ["web", "browser-critical-path", "npm-packed-cli", "single-workspace"],
+    "unsupportedPlatforms": ["linux-arm64", "macos", "windows"],
+    "unsupportedSurfaces": ["electron", "mobile", "multi-workspace", "real-model-network-smoke"]
+  },
+  "capabilities": [
+    { "id": "static-validation", "status": "supported", "description": "Workspace type-check, lint, tests, and production build" },
+    { "id": "ui-stable-contracts", "status": "supported", "description": "Isolated stable UI sync, runtime fetch, route serialization, and authentication contract groups" },
+    { "id": "agent-adapter", "status": "supported", "description": "pi-backed agent contracts and event mapping" },
+    { "id": "session-persistence", "status": "supported", "description": "Single-workspace session store, restoration, tokens, todo, permission, question, and abort contracts" },
+    { "id": "http-auth-sse", "status": "supported", "description": "HTTP routes, authentication, SSE lifecycle, and explicit unknown responses" },
+    { "id": "filesystem", "status": "supported", "description": "Home-confined supported file operations and sensitive-path rejection" },
+    { "id": "git", "status": "supported", "description": "Disposable-repository Git operations and negative cases" },
+    { "id": "terminal", "status": "supported", "description": "Real node-pty and authenticated WebSocket lifecycle" },
+    { "id": "config-mcp-provider", "status": "supported", "description": "Configured, absent, disabled, and damaged local configuration behavior without network model calls" },
+    { "id": "browser-critical-path", "status": "supported", "description": "A repository-owned Playwright scenario exercises packed UI bootstrap, session creation, prompt, SSE rendering, and reload using a deterministic local agent" },
+    { "id": "packed-artifact", "status": "supported", "description": "Pack, clean install, CLI health, auth, explicit unknown route, and restart" },
+    { "id": "publish-enforcement", "status": "supported", "description": "Local evidence binding and exact-artifact publication guard" },
+    { "id": "multi-workspace", "status": "unsupported", "description": "This release supports one configured workspace per server process" },
+    { "id": "real-model-network-smoke", "status": "unsupported", "description": "No provider credential or billable network model operation is claimed by this matrix" },
+    { "id": "desktop-mobile", "status": "unsupported", "description": "Electron and mobile packaging are not qualified" }
+  ],
+  "scenarios": [
+    {
+      "id": "static.type-check", "description": "Workspace TypeScript contracts compile", "command": ["bun", "run", "type-check"],
+      "profiles": ["ci", "full", "backend"], "required": true, "tags": ["static", "typescript"], "prerequisites": ["node>=22", "bun=1.4.0"], "platforms": ["linux-x64"], "timeoutMs": 180000, "stage": "source", "capabilities": ["static-validation"], "passCriteria": "All workspace type-check scripts exit zero"
+    },
+    {
+      "id": "static.lint", "description": "Workspace lint policy passes", "command": ["bun", "run", "lint"],
+      "profiles": ["ci", "full", "backend"], "required": true, "tags": ["static", "lint"], "prerequisites": ["bun=1.4.0"], "platforms": ["linux-x64"], "timeoutMs": 180000, "stage": "source", "capabilities": ["static-validation"], "passCriteria": "All workspace lint scripts exit zero"
+    },
+    {
+      "id": "ui.stable-contract-groups", "description": "Stable UI contract groups run in separate Bun processes to avoid vendored global-mock interference", "command": ["node", "scripts/release/scenarios/ui-stable-tests.cjs"],
+      "profiles": ["full"], "required": true, "tags": ["ui", "sync", "runtime", "auth"], "prerequisites": ["bun=1.4.0"], "platforms": ["linux-x64"], "timeoutMs": 180000, "stage": "source", "capabilities": ["static-validation", "ui-stable-contracts", "http-auth-sse"], "passCriteria": "Reviewed UI sync, runtime fetch, router, and authentication tests pass in isolated processes"
+    },
+    {
+      "id": "agent.contracts", "description": "Agent mapping and SessionStore contracts pass", "command": ["bun", "test", "packages/agent/src"],
+      "profiles": ["ci", "full", "backend"], "required": true, "tags": ["agent", "events", "session"], "prerequisites": ["bun=1.4.0"], "platforms": ["linux-x64"], "timeoutMs": 120000, "stage": "source", "capabilities": ["agent-adapter", "session-persistence"], "passCriteria": "Agent mapping, persistence projection, tokens, todo, permission and abort contract tests pass"
+    },
+    {
+      "id": "agent.pi-session-compatibility", "description": "Real pi SessionManager discovery works in isolated state and tolerates damaged model config", "command": ["bun", "scripts/release/scenarios/pi-session.cjs"],
+      "profiles": ["full", "backend"], "required": true, "tags": ["agent", "pi", "config", "failure"], "prerequisites": ["bun=1.4.0"], "platforms": ["linux-x64"], "timeoutMs": 60000, "stage": "source", "capabilities": ["agent-adapter", "session-persistence", "config-mcp-provider"], "passCriteria": "The agent contract reaches the real pi session manager using only disposable state"
+    },
+    {
+      "id": "web.http-auth-sse", "description": "Loopback HTTP composition, auth modes, SSE cleanup, filesystem/config and unknown routes pass", "command": ["bun", "test", "packages/web/src"],
+      "profiles": ["ci", "full", "backend"], "required": true, "tags": ["web", "http", "auth", "sse", "filesystem", "config"], "prerequisites": ["bun=1.4.0"], "platforms": ["linux-x64"], "timeoutMs": 120000, "stage": "source", "capabilities": ["http-auth-sse", "filesystem", "config-mcp-provider", "session-persistence"], "passCriteria": "Real loopback route and lifecycle tests pass with explicit unsupported responses"
+    },
+    {
+      "id": "runtime.git-disposable", "description": "Git status, stash, branch and negative ref behavior use a disposable repository", "command": ["node", "scripts/release/scenarios/git-disposable.cjs"],
+      "profiles": ["full", "runtime"], "required": true, "tags": ["git", "isolation", "failure"], "prerequisites": ["git", "node>=22"], "platforms": ["linux-x64"], "timeoutMs": 60000, "stage": "source", "capabilities": ["git"], "passCriteria": "Disposable Git operations and the negative option-like ref case behave explicitly"
+    },
+    {
+      "id": "runtime.terminal-node-pty", "description": "Real node-pty create, authenticated WebSocket I/O, resize, restart and kill lifecycle", "command": ["node", "--import", "./packages/web/node_modules/tsx/dist/loader.mjs", "scripts/release/scenarios/terminal-lifecycle.cjs"],
+      "profiles": ["full", "runtime"], "required": true, "tags": ["terminal", "websocket", "node-pty"], "prerequisites": ["node>=22", "command:sh"], "platforms": ["linux-x64"], "timeoutMs": 90000, "stage": "source", "capabilities": ["terminal"], "passCriteria": "A real PTY exchanges output over an authenticated socket and cleans up"
+    },
+    {
+      "id": "gate.self-tests", "description": "Release gate rejection and no-network publish planning self-tests pass", "command": ["bun", "test", "scripts/release"],
+      "profiles": ["ci", "full", "gate-self-test"], "required": true, "tags": ["release", "evidence", "failure"], "prerequisites": ["bun=1.4.0", "git"], "platforms": ["linux-x64"], "timeoutMs": 120000, "stage": "source", "capabilities": ["publish-enforcement"], "passCriteria": "All required rejection cases pass without invoking npm publication or external uploads"
+    },
+    {
+      "id": "static.production-build", "description": "The publish distribution is built from the qualified source tree", "command": ["node", "scripts/build-publish.cjs"],
+      "profiles": ["full", "artifact"], "required": true, "tags": ["build", "ui", "distribution"], "prerequisites": ["node>=22", "bun=1.4.0"], "platforms": ["linux-x64"], "timeoutMs": 300000, "stage": "source", "capabilities": ["static-validation", "packed-artifact"], "passCriteria": "UI and server build complete and dist contains the guarded publish manifest"
+    },
+    {
+      "id": "artifact.clean-install-runtime", "description": "The exact tarball clean-installs and survives CLI restart", "command": ["node", "scripts/release/scenarios/artifact-smoke.cjs"],
+      "profiles": ["full", "artifact"], "required": true, "tags": ["artifact", "npm", "cli", "restart", "failure"], "prerequisites": ["node>=22", "command:npm"], "platforms": ["linux-x64"], "timeoutMs": 300000, "stage": "artifact", "capabilities": ["packed-artifact", "http-auth-sse"], "passCriteria": "Clean install, CLI startup, auth bootstrap, unknown-route rejection, health and restart pass"
+    },
+    {
+      "id": "browser.critical-render-path", "description": "The packed UI renders a deterministic prompted response delivered through the real HTTP/SSE/store pipeline and preserves it after reload", "command": ["bun", "scripts/release/scenarios/browser-critical.cjs"],
+      "profiles": ["full", "browser"], "required": true, "tags": ["browser", "ui", "sse", "artifact"], "prerequisites": ["bun=1.4.0", "command:tar", "env:PICAMBER_RELEASE_BROWSER_EXECUTABLE"], "platforms": ["linux-x64"], "timeoutMs": 180000, "stage": "artifact", "capabilities": ["browser-critical-path", "packed-artifact", "http-auth-sse", "session-persistence"], "passCriteria": "A repository-owned real-browser runner loads the packed UI, creates a session, prompts a deterministic local agent, observes the response rendered through SSE, reloads, and observes the response again"
+    }
+  ]
+}

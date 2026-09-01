@@ -18,3 +18,6 @@ dist/
 .env.*
 !.env.example
 .pi-subagents/
+
+# Local release qualification evidence, logs, screenshots, and tarballs
+.release-evidence/

@@ -15,6 +15,13 @@
     "type-check": "bun run --filter '*' type-check",
     "lint": "bun run --filter '*' lint",
     "test": "bun run --filter '*' test",
-    "build:publish": "node scripts/build-publish.cjs"
+    "build:publish": "node scripts/build-publish.cjs",
+    "release:scenarios": "node scripts/release/scenarios.cjs",
+    "release:gate-self-test": "node scripts/release/self-test.cjs",
+    "release:qualify": "node scripts/release/qualify.cjs",
+    "release:publish": "node scripts/release/publish.cjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.55.0"
   }
 }

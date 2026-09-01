@@ -5,6 +5,10 @@
 > 状态:✅ 真实现 · ⚠️ 部分/近似 · ❌ stub/空
 
 > 审计口径(诚实声明):本轮对 **web 层端点(index.ts / opencode.ts / gitRoutes.ts / githubRoutes.ts / terminalRoutes.ts)** 逐端点核对过;对 **agent 层域(B 消息、D 权限、E todo、K subtask)** 只确认了文件存在 + 核心链路可跑,未逐行重审其完整性——这本身仍是一项欠账。
+>
+> **未知 API 的明确行为:** 未注册的 `/api/*` 操作统一返回 HTTP 404 和 `{ error: "unsupported endpoint", method, path }`;不会再以空数组、空对象、空闲 stream 等“成功形状”伪装为已实现。已知但未支持的能力继续在本清单标为 ❌/⚠️。
+>
+> **发布证据只留本机:** 发布资格证据、日志、截图和 tarball 位于被 gitignore 的 `.release-evidence/`,资格流程不会上传到 CI、GitHub、npm、对象存储或 telemetry。完整策略见 [RELEASE_PROCESS.md](./RELEASE_PROCESS.md)。
 
 ## 面域总览(诚实三档)
 
@@ -103,6 +107,20 @@
 | DELETE /terminal/:id | ✅ | |
 | POST /terminal/force-kill | ✅ | |
 | /terminal/ws (WebSocket) | ✅ | tagged-JSON 协议,鉴权与 HTTP 对齐 | `terminalRoutes.ts:80-113` |
+
+## 未知端点与未支持能力的响应契约
+
+- 已注册端点继续返回各自的真实数据或明确错误。
+- 未注册的 `/api/*` 端点返回 HTTP 404,响应体包含 `error: "unsupported endpoint"`、请求 method 与 path。
+- 不允许通用 fallback 返回 `[]`、`{}`、HTTP 200 或保持空闲连接;这些形状会把未实现/失败误判为权威空状态或成功。
+- 浏览器关键路径已进入发布支持矩阵:仓库自带 Playwright runner,对 packed UI 执行启动、创建确定性本地 session、HTTP prompt、SessionStore/SSE 渲染、刷新恢复验证。该场景不读取真实 provider 凭据,不执行计费模型请求。
+
+## 本地发布证据边界
+
+- `release-scenarios.json` 是 CI 与本地 full gate 共用的唯一场景清单。
+- `.release-evidence/` 仅保留在发布机器本地并被 gitignore;资格脚本没有上传、telemetry 或 `npm publish` 路径。
+- 只有显式执行非 dry-run 的 `bun run release:publish` 才会在重新验证证据与精确 tarball 后调用 npm 发布。
+- 详细支持矩阵、证据有效期、命令与恢复步骤见 [RELEASE_PROCESS.md](./RELEASE_PROCESS.md)。
 
 ## 已知缺口(诚实版,按优先级)
 

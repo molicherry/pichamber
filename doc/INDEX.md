@@ -8,6 +8,7 @@
 | --- | --- |
 | [ARCHITECTURE.md](./ARCHITECTURE.md) | **架构规范(唯一事实来源)**:分层边界、不偏移红线、rebrand 规则、git 提交范围 |
 | [CAPABILITIES.md](./CAPABILITIES.md) | opencode 兼容端点/能力的实现状态清单(✅/⚠️/❌),用于同步更新 openchamber 时 diff。含面域总览(A–L)、端点明细、已知待办、同步流程 |
+| [RELEASE_PROCESS.md](./RELEASE_PROCESS.md) | 本地发布资格门禁:支持矩阵、场景清单、证据格式、无上传约束、发布命令与失败恢复 |
 
 ## 其他文档位置
 
@@ -18,5 +19,6 @@
 ## 维护约定
 
 - 能力清单(`CAPABILITIES.md`)在每次补端点/能力后同步更新
+- 发布支持矩阵与本地证据策略以 `RELEASE_PROCESS.md` 和 `release-scenarios.json` 为准;证据、日志、截图和 tarball 只留在本机,不上传
 - 同步 openchamber 的 4 步流程记录在 `CAPABILITIES.md` 末尾
 - rebrand 脚本在 `scripts/rebrand.py`(从项目根运行)

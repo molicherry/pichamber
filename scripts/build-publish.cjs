@@ -50,6 +50,7 @@ sh("bun run --filter @pichamber/ui build");
 fs.rmSync("dist", { recursive: true, force: true });
 fs.mkdirSync(path.join("dist", "server"), { recursive: true });
 fs.mkdirSync(path.join("dist", "bin"), { recursive: true });
+fs.mkdirSync(path.join("dist", "scripts"), { recursive: true });
 sh(
 	[
 		"bun build packages/web/src/index.ts",
@@ -75,6 +76,10 @@ if (fs.existsSync("LICENSE.pi")) {
 if (fs.existsSync("README.md")) {
 	fs.copyFileSync("README.md", path.join("dist", "README.md"));
 }
+fs.copyFileSync(
+	path.join("scripts", "release", "prepublish-check.cjs"),
+	path.join("dist", "scripts", "prepublish-check.cjs"),
+);
 
 // 4. CLI entry: pin the bundled UI as the default UI_DIST, then boot.
 fs.writeFileSync(
@@ -85,7 +90,9 @@ fs.writeFileSync(
 		'import { fileURLToPath } from "node:url";',
 		"const here = path.dirname(fileURLToPath(import.meta.url));",
 		'process.env.UI_DIST ??= path.resolve(here, "../ui");',
-		'await import("../server/index.js");',
+		'const { createPichamberServer } = await import("../server/index.js");',
+		"const runtime = await createPichamberServer();",
+		"await runtime.start();",
 		"",
 	].join("\n"),
 );
@@ -113,7 +120,8 @@ const manifest = {
 	type: "module",
 	bin: { pichamber: "bin/cli.js" },
 	main: "server/index.js",
-	files: ["bin", "server", "ui", "LICENSE", "README.md"],
+	files: ["bin", "server", "ui", "scripts", "LICENSE", "README.md"],
+	scripts: { prepublishOnly: "node scripts/prepublish-check.cjs" },
 	engines: { node: ">=22.0.0" },
 	repository: {
 		type: "git",
