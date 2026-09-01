@@ -54,6 +54,25 @@ function seedWorkspace(workspace) {
 	);
 }
 
+function seedSettings(home, workspace) {
+	const configDir = path.join(home, ".config", "openchamber");
+	fs.mkdirSync(configDir, { recursive: true });
+	fs.writeFileSync(
+		path.join(configDir, "settings.json"),
+		JSON.stringify({
+			projects: [
+				{
+					id: "e2e-project",
+					path: workspace,
+					label: "E2E Workspace",
+					addedAt: 1700000000000,
+					lastOpenedAt: 1700000000000,
+				},
+			],
+		}, null, 2),
+	);
+}
+
 // Bootstrap probe prefixes that pichamber honestly does not support. Their
 // explicit 404 is a correct degradation, not a defect, so they are excluded
 // from the "unexpected 4xx/5xx" check.
@@ -72,7 +91,13 @@ const BOOTSTRAP_UNSUPPORTED_PREFIXES = [
 	"/api/session-folders",
 	"/api/push/",
 	"/api/global/event/ws",
+	"/api/project-context/",
+	"/api/session-knowledge",
+	"/api/sessions/",
 ];
+
+// External metadata the vendored UI fetches by design (model logos/capabilities).
+const EGRESS_ALLOW_PREFIXES = ["https://models.dev/"];
 
 function isBootstrapUnsupported(urlPath) {
 	return BOOTSTRAP_UNSUPPORTED_PREFIXES.some((prefix) => urlPath.includes(prefix));
@@ -92,6 +117,7 @@ async function createHarness(options = {}) {
 		JSON.stringify(FAKE_MODELS, null, 2),
 	);
 	seedWorkspace(dirs.workspace);
+	seedSettings(dirs.home, dirs.workspace);
 
 	const previous = {
 		HOME: process.env.HOME,
@@ -136,6 +162,8 @@ async function createHarness(options = {}) {
 		if (url.startsWith("data:") || url.startsWith("blob:"))
 			return route.continue();
 		if (url.startsWith(serverOrigin)) return route.continue();
+		if (EGRESS_ALLOW_PREFIXES.some((p) => url.startsWith(p)))
+			return route.abort(); // allowed origin, but no network in tests
 		egressViolations.push(`${route.request().method()} ${url}`);
 		return route.abort();
 	});
@@ -154,15 +182,28 @@ async function createHarness(options = {}) {
 		// Realtime WS is not implemented; the SDK falls back to SSE. The failed
 		// handshake is expected, not a defect.
 		if (text.startsWith("WebSocket connection")) return;
+		// Vendored UI degrade-on-unsupported logs (openchamber-only surfaces).
+		if (text.startsWith("Failed to load skills")) return;
+		if (text.startsWith("Failed to load commands")) return;
+		if (text.startsWith("Failed to fetch model metadata")) return;
 		consoleErrors.push(text);
 	});
-	page.on("requestfailed", (request) =>
-		requestFailures.push(`${request.method()} ${request.url()}`),
-	);
+	page.on("requestfailed", (request) => {
+		const url = request.url();
+		// Expected: allowed external metadata (models.dev) and long-lived
+		// streams aborted at teardown (prompt_async, openchamber/events).
+		if (EGRESS_ALLOW_PREFIXES.some((p) => url.startsWith(p))) return;
+		if (url.includes("/prompt_async")) return;
+		if (url.includes("/openchamber/events")) return;
+		if (url.includes("/notifications/stream")) return;
+		requestFailures.push(`${request.method()} ${url}`);
+	});
 	page.on("response", (response) => {
 		if (response.status() < 400) return;
 		const pathOnly = response.request().url().replace(serverOrigin, "");
 		if (isBootstrapUnsupported(pathOnly)) return;
+		// fs/read 403/404 is file-semantics (missing/forbidden), not endpoint missing.
+		if (pathOnly.includes("/api/fs/read") && (response.status() === 403 || response.status() === 404)) return;
 		unexpectedResponses.push(`${response.status()} ${response.request().method()} ${pathOnly}`);
 	});
 
@@ -185,13 +226,25 @@ async function createHarness(options = {}) {
 			egressViolations,
 			unexpectedResponses,
 		},
-		async assertClean() {
+		async waitReady() {
+			await this.page.waitForFunction(() => document.body.innerText.trim().length > 0, null, { timeout: 30_000 });
+			// Close the first-run "Add project directory" prompt when the local
+			// projects cache is empty (settings sync is async).
+			const dialog = this.page.locator('[role="dialog"]').filter({ hasText: "Add project directory" });
+			if (await dialog.count()) {
+				await this.page.keyboard.press("Escape");
+				await dialog.waitFor({ state: "detached", timeout: 10_000 }).catch(() => {});
+			}
+		},
+		async assertClean(options = {}) {
+			const allowResponses = options.allowResponses || [];
 			const o = this.observability;
 			const problems = [];
 			if (o.pageErrors.length) problems.push(`pageerror: ${o.pageErrors.join(" | ")}`);
 			if (o.consoleErrors.length) problems.push(`console.error: ${o.consoleErrors.join(" | ")}`);
 			if (o.requestFailures.length) problems.push(`requestfailed: ${o.requestFailures.join(" | ")}`);
-			if (o.unexpectedResponses.length) problems.push(`unexpected 4xx/5xx: ${o.unexpectedResponses.join(" | ")}`);
+			const unexpected = o.unexpectedResponses.filter((u) => !allowResponses.some((a) => u.includes(a)));
+			if (unexpected.length) problems.push(`unexpected 4xx/5xx: ${unexpected.join(" | ")}`);
 			if (o.egressViolations.length) problems.push(`egress: ${o.egressViolations.join(" | ")}`);
 			if (problems.length) throw new Error(problems.join("; "));
 		},

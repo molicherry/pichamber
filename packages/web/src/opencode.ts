@@ -629,6 +629,38 @@ export function createOpencodeRoutes(
 		}
 	});
 
+	// Directory creation (draft/session persistence) — HOME-confined like fs/read.
+	router.post("/fs/mkdir", (req: Request, res: Response) => {
+		const p = typeof req.body?.path === "string" ? req.body.path : "";
+		if (!p || !isWithinHome(p) || isSensitivePath(p)) {
+			res.status(403).json({ error: "forbidden" });
+			return;
+		}
+		try {
+			fs.mkdirSync(p, { recursive: true });
+			res.json({ success: true, path: p });
+		} catch {
+			res.status(500).json({ error: "mkdir failed" });
+		}
+	});
+
+	// File write (draft persistence) — HOME-confined like fs/read.
+	router.post("/fs/write", (req: Request, res: Response) => {
+		const p = typeof req.body?.path === "string" ? req.body.path : "";
+		const content = typeof req.body?.content === "string" ? req.body.content : "";
+		if (!p || !isWithinHome(p) || isSensitivePath(p)) {
+			res.status(403).json({ error: "forbidden" });
+			return;
+		}
+		try {
+			fs.mkdirSync(path.dirname(p), { recursive: true });
+			fs.writeFileSync(p, content, "utf8");
+			res.json({ success: true, path: p });
+		} catch {
+			res.status(500).json({ error: "write failed" });
+		}
+	});
+
 	app.use("/api", router);
 }
 

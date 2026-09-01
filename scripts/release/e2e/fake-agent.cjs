@@ -95,7 +95,7 @@ class DeterministicClient {
 					? ["PICHAMBER_", "STREAM_", "OK"]
 					: ["PICHAMBER_", "RECONNECTED_", "OK"];
 			for (const delta of parts) {
-				await sleep(200);
+				await sleep(500);
 				this.emit({ type: "text_delta", delta });
 			}
 			this.emit({ type: "agent_end" });
