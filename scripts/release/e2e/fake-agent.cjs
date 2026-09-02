@@ -261,6 +261,9 @@ class DeterministicRegistry {
 			createdAt: runtime.store.getSession().time.created,
 			updatedAt: runtime.store.getSession().time.updated,
 			messageCount: runtime.store.getMessages().length,
+			...(runtime.store.getSession().time.archived !== undefined
+				? { archived: runtime.store.getSession().time.archived }
+				: {}),
 			tokens: {
 				input: 0,
 				output: 0,
