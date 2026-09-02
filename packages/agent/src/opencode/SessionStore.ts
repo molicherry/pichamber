@@ -466,12 +466,12 @@ export class SessionStore {
 
   private nextMessageId(): string {
     this.msgSeq += 1;
-    return `msg-${this.msgSeq}`;
+    return `msg-${this.session.id}-${this.msgSeq}`;
   }
 
   private nextPartId(): string {
     this.partSeq += 1;
-    return `part-${this.partSeq}`;
+    return `part-${this.session.id}-${this.partSeq}`;
   }
 
   private lastUserMessageId(): string | undefined {

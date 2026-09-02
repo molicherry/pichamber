@@ -116,7 +116,10 @@ class DeterministicClient {
 			this.emit({ type: "agent_start" });
 			this.emit({ type: "text_delta", delta: REPLY_ABORT_PARTIAL });
 			await this._waitAbort();
-			if (this.aborted) return; // stopped: never emit the forbidden tail
+			if (this.aborted) {
+				this.emit({ type: "agent_end" }); // close the run so the session returns to idle
+				return;
+			}
 			this.emit({ type: "text_delta", delta: REPLY_ABORT_FORBIDDEN });
 			this.emit({ type: "agent_end" });
 			return;

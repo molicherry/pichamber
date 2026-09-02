@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 "use strict";
 
-/** UI-P0-12: permission Deny flows back without stalling the session. */
+/** UI-P0-09: page reload restores the session, messages, and selection. */
 
 const { createHarness } = require("../harness.cjs");
-const { REPLY_PERMISSION_REJECTED } = require("../fake-agent.cjs");
+const { REPLY_STREAM } = require("../fake-agent.cjs");
 
 async function main() {
 	const h = await createHarness();
@@ -20,30 +20,29 @@ async function main() {
 			.getByTestId("chat-input")
 			.locator('[contenteditable="true"]');
 		await editable.click();
-		await h.page.keyboard.insertText("E2E:PERMISSION_REJECT");
+		await h.page.keyboard.insertText("E2E:STREAM");
 		await h.page.keyboard.press("Enter");
-
 		await h.page
-			.getByText("Allow release browser action?", { exact: false })
+			.getByText(REPLY_STREAM, { exact: false })
 			.first()
 			.waitFor({ state: "visible", timeout: 20_000 });
-		await h.page.getByRole("button", { name: "Deny" }).click();
 
+		const sessionCountBefore = h.registry.runtimesList().length;
+
+		await h.page.reload({ waitUntil: "domcontentloaded", timeout: 60_000 });
+		await h.waitReady();
+
+		// Same session and reply still present; no new session created.
 		await h.page
-			.getByText(REPLY_PERMISSION_REJECTED, { exact: false })
+			.getByText(REPLY_STREAM, { exact: false })
 			.first()
 			.waitFor({ state: "visible", timeout: 20_000 });
-		if (
-			await h.page.evaluate(
-				(r) => document.body.innerText.includes(r),
-				"PICHAMBER_PERMISSION_ALLOWED",
-			)
-		) {
-			throw new Error("allowed reply appeared after Deny");
+		if (h.registry.runtimesList().length !== sessionCountBefore) {
+			throw new Error("session count changed after reload");
 		}
 
 		await h.assertClean();
-		console.log("UI-P0-12 passed");
+		console.log("UI-P0-09 passed");
 	} finally {
 		await h.teardown();
 	}
@@ -51,7 +50,7 @@ async function main() {
 
 main().catch((error) => {
 	console.error(
-		`UI-P0-12 failed: ${error instanceof Error ? error.message : String(error)}`,
+		`UI-P0-09 failed: ${error instanceof Error ? error.message : String(error)}`,
 	);
 	process.exit(1);
 });

@@ -94,13 +94,20 @@ const BOOTSTRAP_UNSUPPORTED_PREFIXES = [
 	"/api/project-context/",
 	"/api/session-knowledge",
 	"/api/sessions/",
+	"/api/opencode/upgrade-status",
 ];
+
+// Exact probe paths (the reply routes /api/question/:id/reply and
+// /api/permission/:id/reply are implemented; only the list probes are unsupported).
+const BOOTSTRAP_UNSUPPORTED_EXACT = ["", "/api/question", "/api/permission"];
 
 // External metadata the vendored UI fetches by design (model logos/capabilities).
 const EGRESS_ALLOW_PREFIXES = ["https://models.dev/"];
 
 function isBootstrapUnsupported(urlPath) {
-	return BOOTSTRAP_UNSUPPORTED_PREFIXES.some((prefix) => urlPath.includes(prefix));
+	const pathOnly = urlPath.split("?")[0];
+	if (BOOTSTRAP_UNSUPPORTED_EXACT.includes(pathOnly)) return true;
+	return BOOTSTRAP_UNSUPPORTED_PREFIXES.some((prefix) => pathOnly.includes(prefix));
 }
 
 async function createHarness(options = {}) {
@@ -195,7 +202,10 @@ async function createHarness(options = {}) {
 		if (EGRESS_ALLOW_PREFIXES.some((p) => url.startsWith(p))) return;
 		if (url.includes("/prompt_async")) return;
 		if (url.includes("/openchamber/events")) return;
-		if (url.includes("/notifications/stream")) return;
+		if (url.includes("/api/event") || url.includes("/global/event")) return; // SSE long-lived stream
+		if (url.includes("/session/") && url.includes("/abort")) return;
+		if (url.includes("/api/event")) return; // SSE long-lived stream
+		if (url.includes("/session/") && url.includes("/abort")) return;
 		requestFailures.push(`${request.method()} ${url}`);
 	});
 	page.on("response", (response) => {
