@@ -79,9 +79,9 @@ class DeterministicClient {
 		if (this.failNextPrompt) {
 			const failure = this.failNextPrompt;
 			this.failNextPrompt = null;
-			const error = new Error(failure.message || "E2E_PROMPT_FAILURE");
-			error.status = failure.status || 503;
-			throw error;
+			this.emit({ type: "agent_start" });
+			this.emit({ type: "status", status: "error", error: failure.message || "E2E_PROMPT_FAILURE" });
+			return;
 		}
 
 		this.aborted = false;
