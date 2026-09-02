@@ -48,6 +48,14 @@ export interface SessionRuntime {
 export interface SessionRegistryOptions {
 	cwd: string;
 	tools?: string[];
+	/**
+	 * Inject a custom AgentClient factory (tests use this to drive a deterministic
+	 * client against the REAL SessionManager persistence). Defaults to the pi adapter.
+	 */
+	clientFactory?: (
+		manager: SessionManager,
+		ctx: { permissionBroker: PermissionBroker; todoState: TodoState },
+	) => Promise<AgentClient>;
 }
 
 export class SessionRegistry {
@@ -222,16 +230,21 @@ export class SessionRegistry {
 			manager.appendCustomEntry("todo", { todos });
 		});
 
-		const client = await createAgentClient({
-			cwd: this.opts.cwd,
-			tools: this.opts.tools,
-			sessionManager: manager,
-			customTools: [createTodoTool(todoState), createSubtaskTool({ cwd: this.opts.cwd })],
-			permissionBroker: this.permissionBroker,
-			onToolsChanged: () => {
-				for (const l of this.mcpToolsListeners) l();
-			},
-		});
+		const client = this.opts.clientFactory
+			? await this.opts.clientFactory(manager, {
+					permissionBroker: this.permissionBroker,
+					todoState,
+				})
+			: await createAgentClient({
+					cwd: this.opts.cwd,
+					tools: this.opts.tools,
+					sessionManager: manager,
+					customTools: [createTodoTool(todoState), createSubtaskTool({ cwd: this.opts.cwd })],
+					permissionBroker: this.permissionBroker,
+					onToolsChanged: () => {
+						for (const l of this.mcpToolsListeners) l();
+					},
+				});
 
 		const store = new SessionStore(client, {
 			id,

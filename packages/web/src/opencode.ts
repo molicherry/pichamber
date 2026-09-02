@@ -31,6 +31,8 @@ import { resolveAgentDir } from "./piRuntime.js";
  * stream. subscribePanelEvents is called once per SSE connection.
  */
 const panelListeners = new Set<(event: OpencodeEvent) => void>();
+/** Live SSE response streams (for the E2E drop-sse fault control). */
+const sseConnections = new Set<import("express").Response>();
 export function broadcastPanelEvent(
 	type: string,
 	properties: Record<string, unknown>,
@@ -368,6 +370,7 @@ export function createOpencodeRoutes(
 	// --- SSE (fan out across every live runtime) ---
 
 	const sseHandler = (req: Request, res: Response) => {
+		sseConnections.add(res);
 		res.writeHead(200, {
 			"Content-Type": "text/event-stream",
 			"Cache-Control": "no-cache",
@@ -452,6 +455,7 @@ export function createOpencodeRoutes(
 		});
 
 		req.on("close", () => {
+			sseConnections.delete(res);
 			unsubscribe();
 			unsubscribePermissions();
 			unsubscribePanel();
@@ -460,6 +464,14 @@ export function createOpencodeRoutes(
 	};
 	router.get("/event", sseHandler);
 	router.get("/global/event", sseHandler);
+
+	// E2E fault control: drop all live SSE streams so the UI must reconnect.
+	router.post("/_e2e/drop-sse", (_req: Request, res: Response) => {
+		for (const stream of sseConnections) {
+			try { stream.end(); } catch { /* already closed */ }
+		}
+		res.json({ dropped: sseConnections.size });
+	});
 
 	// Permission reply — opencode posts { reply: "once" | "always" | "reject", message? }.
 	router.post("/permission/:id/reply", (req: Request, res: Response) => {

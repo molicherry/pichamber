@@ -73,6 +73,23 @@ function seedSettings(home, workspace) {
 	);
 }
 
+/** Bun skips untrusted lifecycle scripts; build node-pty explicitly for terminal cases. */
+function ensureNodePty() {
+	try {
+		require("../../../packages/web/node_modules/node-pty");
+		return;
+	} catch {
+		// fall through to an explicit rebuild
+	}
+	const { execFileSync } = require("node:child_process");
+	const nodePtyPackage = require.resolve("../../../packages/web/node_modules/node-pty/package.json");
+	const nodePtyDir = path.dirname(fs.realpathSync(nodePtyPackage));
+	const npmRoot = execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
+	const nodeGyp = path.join(npmRoot, "npm", "node_modules", "node-gyp", "bin", "node-gyp.js");
+	if (!fs.existsSync(nodeGyp)) throw new Error(`npm's bundled node-gyp not found at ${nodeGyp}`);
+	execFileSync(process.execPath, [nodeGyp, "rebuild"], { cwd: nodePtyDir, stdio: "inherit" });
+}
+
 // Bootstrap probe prefixes that pichamber honestly does not support. Their
 // explicit 404 is a correct degradation, not a defect, so they are excluded
 // from the "unexpected 4xx/5xx" check.
@@ -125,6 +142,7 @@ async function createHarness(options = {}) {
 	);
 	seedWorkspace(dirs.workspace);
 	seedSettings(dirs.home, dirs.workspace);
+	if (options.terminal === true) ensureNodePty();
 
 	const previous = {
 		HOME: process.env.HOME,

@@ -33,17 +33,20 @@ const TODO_TEXT = "release browser todo";
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 class DeterministicClient {
-	constructor({ sessionId, permissionBroker, todoState }) {
+	constructor({ sessionId, permissionBroker, todoState, manager }) {
 		this.sessionId = sessionId;
 		this.permissionBroker = permissionBroker;
 		this.todoState = todoState;
+		this.manager = manager || null;
 		this.listeners = new Set();
 		this.aborted = false;
 		this._abortWaiters = [];
 		this.failNextPrompt = null; // { status, message }
+		this.lastReply = "";
 	}
 
 	emit(event) {
+		if (event.type === "text_delta") this.lastReply += event.delta;
 		for (const listener of this.listeners) listener(event);
 	}
 
@@ -53,7 +56,32 @@ class DeterministicClient {
 	}
 
 	getSnapshot() {
+		// Rebuild a snapshot from the real SessionManager when a manager is bound
+		// (server-restart persistence).
+		if (this.manager) {
+			const messages = [];
+			for (const entry of this.manager.getEntries()) {
+				if (entry.type === "message" && entry.message) {
+					messages.push(this.toAgentMessage(entry.message));
+				}
+			}
+			return { sessionId: this.sessionId, isStreaming: false, messages };
+		}
 		return { sessionId: this.sessionId, isStreaming: false, messages: [] };
+	}
+
+	toAgentMessage(message) {
+		const text = Array.isArray(message.content)
+			? message.content.filter((c) => c?.type === "text").map((c) => c.text).join("")
+			: String(message.content ?? "");
+		return {
+			id: message.id ?? `restored-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+			role: message.role,
+			timestamp: typeof message.timestamp === "number" ? message.timestamp : Date.now(),
+			text: text || undefined,
+			parts: text ? [{ type: "text", text }] : [],
+			usage: message.usage ?? undefined,
+		};
 	}
 
 	async steer() {}
@@ -301,9 +329,55 @@ class DeterministicRegistry {
 	}
 }
 
+/**
+ * Factory for injecting a deterministic client into the REAL SessionRegistry
+ * (used by P0-10 to test server-restart persistence with the real SessionManager).
+ */
+function createDeterministicClientFactory() {
+	return async (manager, ctx) => {
+		const client = new DeterministicClient({
+			sessionId: manager.getSessionId(),
+			permissionBroker: ctx.permissionBroker,
+			todoState: ctx.todoState,
+			manager,
+		});
+		// Persist user + assistant messages into the real SessionManager so
+		// server restart restores them.
+		const originalPrompt = client.prompt.bind(client);
+		client.prompt = async (text) => {
+			manager.appendMessage({
+				role: "user",
+				content: [{ type: "text", text }],
+				api: "e2e",
+				provider: "e2e",
+				model: "deterministic",
+				usage: { input: 0, output: 0, totalTokens: 0 },
+				stopReason: "stop",
+				timestamp: Date.now(),
+			});
+			client.lastReply = "";
+			await originalPrompt(text);
+			if (client.lastReply) {
+				manager.appendMessage({
+					role: "assistant",
+					content: [{ type: "text", text: client.lastReply }],
+					api: "e2e",
+					provider: "e2e",
+					model: "deterministic",
+					usage: { input: 0, output: 0, totalTokens: 0 },
+					stopReason: "stop",
+					timestamp: Date.now(),
+				});
+			}
+		};
+		return client;
+	};
+}
+
 module.exports = {
 	DeterministicRegistry,
 	DeterministicClient,
+	createDeterministicClientFactory,
 	REPLY_STREAM,
 	REPLY_SESSION_A,
 	REPLY_SESSION_B,
