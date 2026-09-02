@@ -10,6 +10,8 @@
 | [CAPABILITIES.md](./CAPABILITIES.md) | opencode 兼容端点/能力的实现状态清单(✅/⚠️/❌),用于同步更新 openchamber 时 diff。含面域总览(A–L)、端点明细、已知待办、同步流程 |
 | [RELEASE_PROCESS.md](./RELEASE_PROCESS.md) | 本地发布资格门禁:支持矩阵、场景清单、证据格式、无上传约束、发布命令与失败恢复 |
 | [RELEASE_TESTS.md](./RELEASE_TESTS.md) | 本地发布资格测试项逐项梳理:测什么 / 怎么测 / 通过标准,与 `release-scenarios.json` 对应 |
+| [UI_E2E_CASES.md](./UI_E2E_CASES.md) | Web UI 层级 0 E2E 测试规范:分层、夹具契约、locator、19 个 P0 用例与已知风险 |
+| [UI_E2E_FINDINGS.md](./UI_E2E_FINDINGS.md) | UI 界面自测问题汇总:测试结果、发现并修复的产品 bug、未解决的跨层问题 |
 
 ## 其他文档位置
 
