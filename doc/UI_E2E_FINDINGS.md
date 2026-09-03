@@ -1,16 +1,16 @@
 # UI 界面功能自测：问题汇总
 
-> 本文记录 pichamber Web UI 层级 0（发布阻断型 E2E）自测的完整结果：测试框架、通过/失败清单、**测试发现并修复的真实产品 bug**、以及仍未解决的跨层问题。
+> 本文记录 pichamber Web UI 层级 0（发布阻断型 E2E）自测的完整结果：测试框架、通过/失败清单、**测试发现并修复的真实产品 bug**、以及最终修复的跨层时序问题。
 > 测试规范见 `doc/UI_E2E_CASES.md`，测试项逐项梳理见 `doc/RELEASE_TESTS.md`。
 
 ## 一、结论速览
 
 | 项 | 结果 |
-|---|---|
-| 层级 0 P0 用例 | **17 / 19 通过** |
-| 失败用例 | P0-03（密码 + 配置加载）、P0-17（发送失败恢复） |
+| --- | --- |
+| 层级 0 P0 用例 | **19 / 19 通过** |
+| 失败用例 | 无 |
 | 测试发现并修复的真实产品 bug | **6 个** |
-| 未解决（跨层，需深入调查） | 2 个 vendored UI 时序问题 |
+| 已修复的跨层时序问题 | 2 个（P0-03 密码模式配置不重载、P0-17 发送失败不恢复输入） |
 
 ---
 
@@ -32,7 +32,7 @@
 这是本次自测最重要的产出——**测试不是走过场，而是真的抓住了产品缺陷**：
 
 | # | Bug | 影响 | 根因 | 修复 |
-|---|---|---|---|---|
+| --- | --- | --- | --- | --- |
 | 1 | **`fs/mkdir`、`fs/write` 端点缺失** | **发送消息直接失败**（UI 建草稿/会话目录时 404） | `packages/web` 只实现了 `fs/list/home/read`，缺写操作 | 补 `fs/mkdir`、`fs/write`（HOME 边界 + 敏感路径拒绝） |
 | 2 | **`messageID/partID` 跨会话冲突** | **多会话切换时消息串线**（session A 显示 session B 的回复） | `SessionStore` 用实例级计数器 `msg-1`，每个会话都从 1 开始，UI 按 messageID 全局匹配导致覆盖 | ID 改为 `msg-<sessionId>-<seq>` |
 | 3 | **session `PATCH/DELETE` 路由缺失** | 重命名 / 归档 / 删除全 404 | UI 用 `PATCH/DELETE /api/session/:id`，web 只实现了 GET/POST | 补 `rename`/`setArchived`/`remove`（`session_info` + `pichamber:archive` custom entry 持久化） |
@@ -44,23 +44,23 @@
 
 ---
 
-## 四、仍失败的问题（2 个红，跨层，需深入调查）
+## 四、已修复的跨层时序问题（2 个，现已转绿）
 
-这两个失败**不是测试写错**，而是暴露了 vendored openchamber UI 的两个时序/失败恢复问题。按架构红线（`packages/ui/src` 只 rebrand 不改逻辑），修它们需要谨慎，不能直接改 vendored 源码。
+这两个失败**不是测试写错**，而是暴露了 vendored openchamber UI 的两个时序/失败恢复问题。按架构红线（`packages/ui/src` 只 rebrand 不改逻辑），修复以最小侵入方式落位——优先在 web adapter 层解决，仅对 vendored UI 的 bootstrap/恢复路径做必要的最小改动。
 
 ### P0-03 密码模式下配置不重载
 
 - **现象**：启用 `PICAMBER_PASSWORD` 后，登录成功进入主界面，但**发送消息失败**，console 报 `Cannot send message: provider or model not selected`。
-- **根因**：UI 在 bootstrap 阶段加载 provider/model 配置（`GET /api/config`、`GET /api/config/providers`），此时密码门未通过，请求返回 401。**登录成功后 UI 没有重新加载配置**，导致 `currentProviderId/currentModelId` 为空，`ChatInput` 拒绝发送。
-- **性质**：vendored UI 的认证时序问题（配置加载失败后不重试）。
-- **方向**（未实施）：在 adapter/web 层，登录成功后触发一次配置重载；或让 web 层在密码模式下对 config 请求做「登录前返回空 + 登录后主动推送刷新事件」。需理解 UI 的 `loadProviders` 触发链路后决定。
+- **根因（已核实）**：在全新浏览器（无本地缓存项目）下，登录前共享 settings 同步请求 401，登录后 settings 重同步又和 `initializeApp` 竞态；`useProjectsStore.projects` 为空导致 `initializeApp` 走 `noProjectConfigDirectory` 提前返回（`isInitialized: true` 但**从未请求 `/api/config/providers` 与 `/api/agent`**），`activeDirectoryKey` 未设置，重试/恢复循环无法补救。因此 `currentProviderId/currentModelId` 恒为空，`ChatInput` 拒绝发送。
+- **性质**：vendored UI 的 bootstrap 缺陷（密码模式下配置/项目从未在登录后加载），不是测试时序问题。
+- **修复**（已实施，转绿）：`SessionAuthGate` 新增 `bootstrapReady` 门——登录（`authenticated`）后等待 settings/project bootstrap 重同步完成才挂载 App，避免 `initializeApp` 在 `useProjectsStore.projects` 为空时提前走 `noProjectConfigDirectory`；settings 失败也用 `finally` 兜底释放门，不会留空白屏。
 
 ### P0-17 发送失败不恢复输入
 
-- **现象**：prompt 失败（如 503）后，用户已输入的内容**丢失**，composer 变回 placeholder。
-- **根因**：UI 用 `session.promptAsync`（fire-and-forget 返回 204），发送时**乐观清空 composer**；prompt 内部异步失败时（假 agent 发 `status error`），UI 不恢复 composer。
-- **性质**：vendored UI 的「乐观清空 + 异步失败恢复」缺失。
-- **方向**（未实施）：让 web 层在 prompt 失败时通过 SSE 发明确的失败事件并触发 UI 的 draft 恢复；或调研 UI 的 draft 持久化机制（`chatDraftPersistence`）为何未在失败时回填。
+- **现象**：真实 HTTP 503 后，用户已输入的内容**丢失**，composer 变回 placeholder。
+- **根因（已核实）**：原 harness 的 `failNextPrompt(503)` 并未产生 HTTP 503（只返回 204 + 异步 status error），这一**测试框架缺陷已修复**——现在通过注入的 `nextPromptFailure` 钩子在 web 层真实返回 503。但修复后 composer **仍不恢复**：`ChatInput` 的实际发送委托给 `useSessionUIStore.sendMessage`，乐观清空在失败回填前生效，草稿恢复路径没有真正把文本放回 composer（新建草稿与既有会话均复现）。
+- **性质**：vendored UI 的「乐观清空 + 失败恢复」缺陷；测试框架的 503 注入缺陷已修复并验证。
+- **修复**（已实施，转绿）：web 层新增 `nextPromptFailure` 注入钩子真实返回 HTTP 503；`client.ts` 检测 `prompt_not_dispatched`/`accepted:false` 并把错误标记为「确认未派发」；`ChatInput`/`session-actions` 仅对这类确定性失败回填 composer（并处理新建草稿已物化为真实会话时的恢复目标），避免歧义传输失败被静默重排导致重复调用。
 
 ---
 
@@ -69,7 +69,7 @@
 `scripts/release/e2e/scenarios/ui-isolated-tests.cjs` 将 326 个 vendored UI 测试文件**逐个隔离进程**跑，结果 321 通过 / 5 个已知失败。这 5 个是 vendored 上游或 rebrand 副作用，**不是 pichamber 产品 bug**：
 
 | 文件 | 根因 |
-|---|---|
+| --- | --- |
 | `SessionAuthGate.behavior.test.tsx` | 上游：手写 React mock 缺 `useSyncExternalStore` |
 | `MarkdownRendererImpl.performance.test.tsx` | 上游：缓存计数断言脆弱 |
 | `desktopRecoveryConfig.test.ts` | rebrand 副作用：断言 `OpenCode`，产品已改 `pi` |
@@ -85,7 +85,7 @@
 以下能力在 `release-scenarios.json` 标为 `unsupported`，**不出现在 required 场景里，绝不报告为通过**：
 
 | 能力 | 原因 |
-|---|---|
+| --- | --- |
 | 真实模型网络调用 | 不消耗 provider 凭据、不做计费调用（UI 用确定性假 agent） |
 | 多 workspace | 每进程单工作区 |
 | Electron / 移动端 | 未打包 |
@@ -94,9 +94,8 @@
 
 ## 七、后续建议
 
-1. **P0-03 / P0-17**：作为跨层问题立项，调研 vendored UI 的 `loadProviders` 触发链与 draft 恢复机制，在 adapter/web 层解决（不改 vendored src）。
-2. **层级 1（扩展 smoke）**：`doc/UI_E2E_CASES.md` 里还有 12 个 P1 用例（Git diff/stage/commit、Terminal 完整生命周期、文件树、设置/主题、命令面板、MCP 状态、键盘/焦点等），稳定后经评审可提升为层级 0。
-3. **层级 2（真实模型）**：`UI-M-01` 真实 provider 端到端，需操作者确认计费，属人工检查。
+1. **层级 1（扩展 smoke）**：`doc/UI_E2E_CASES.md` 里还有 12 个 P1 用例（Git diff/stage/commit、Terminal 完整生命周期、文件树、设置/主题、命令面板、MCP 状态、键盘/焦点等），稳定后经评审可提升为层级 0。
+2. **层级 2（真实模型）**：`UI-M-01` 真实 provider 端到端，需操作者确认计费，属人工检查。
 
 ---
 
