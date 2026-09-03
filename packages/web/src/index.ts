@@ -34,13 +34,18 @@ export interface PichamberServerOptions {
 	registry?: SessionRegistry;
 	/** Tests may disable the native terminal surface; production defaults to enabled. */
 	terminal?: boolean;
+	/** E2E-only: hook that returns the HTTP status for the next prompt to fail with, or null. */
+	nextPromptFailure?: () => { status: number; message: string } | null;
 }
 
 export interface PichamberServerRuntime {
 	app: import("express").Express;
 	server: http.Server;
 	registry: SessionRegistry;
-	start: (port?: number, host?: string) => Promise<{ port: number; host: string; url: string }>;
+	start: (
+		port?: number,
+		host?: string,
+	) => Promise<{ port: number; host: string; url: string }>;
 	stop: () => Promise<void>;
 }
 
@@ -49,22 +54,40 @@ export async function createPichamberServer(
 ): Promise<PichamberServerRuntime> {
 	// The agent works against PICAMBER_WORKSPACE when set (the mounted
 	// workspace in Docker); otherwise fall back to the repo root (local dev).
-	const cwd = options.cwd ?? (process.env.PICAMBER_WORKSPACE
-		? path.resolve(process.env.PICAMBER_WORKSPACE)
-		: path.resolve(process.cwd(), "../.."));
+	const cwd =
+		options.cwd ??
+		(process.env.PICAMBER_WORKSPACE
+			? path.resolve(process.env.PICAMBER_WORKSPACE)
+			: path.resolve(process.cwd(), "../.."));
 
 	// Detect pi runtime deps (plugins/extensions/models.json) up front and
 	// warn loudly — silent degradation is worse than a clear startup error.
 	const piRuntime = detectPiRuntime();
 	const piWarning = formatPiRuntimeWarning(piRuntime);
 	if (piWarning) console.warn(piWarning);
-	const registry = options.registry ?? new SessionRegistry({
-		cwd,
-		tools: [
-			"read", "grep", "find", "ls", "write", "edit", "bash", "todo", "subtask",
-			"lsp_diagnostics", "lsp_navigation", "lens_diagnostics", "ast_grep_search", "ast_grep_outline", "module_report", "symbol_search",
-		],
-	});
+	const registry =
+		options.registry ??
+		new SessionRegistry({
+			cwd,
+			tools: [
+				"read",
+				"grep",
+				"find",
+				"ls",
+				"write",
+				"edit",
+				"bash",
+				"todo",
+				"subtask",
+				"lsp_diagnostics",
+				"lsp_navigation",
+				"lens_diagnostics",
+				"ast_grep_search",
+				"ast_grep_outline",
+				"module_report",
+				"symbol_search",
+			],
+		});
 
 	const app = express();
 	// Allowed extra origins come from the environment (comma-separated), so the
@@ -109,15 +132,20 @@ export async function createPichamberServer(
 			auth,
 		);
 
-	const requireAuth = (req: import("express").Request, res: import("express").Response, next: () => void) => {
+	const requireAuth = (
+		req: import("express").Request,
+		res: import("express").Response,
+		next: () => void,
+	) => {
 		if (!isAuthEnabled(auth) || isAuthenticated(req)) return next();
 		res.status(401).json({ error: "unauthorized" });
 	};
 	app.use("/api", requireAuth);
 
-
 	// opencode-compatible API + SSE (the vendored UI talks to these).
-	createOpencodeRoutes(app, registry);
+	createOpencodeRoutes(app, registry, {
+		nextPromptFailure: options.nextPromptFailure,
+	});
 
 	createGitRoutes(app, cwd, (prompt, systemPrompt) =>
 		registry.generateText(prompt, systemPrompt),
@@ -130,9 +158,10 @@ export async function createPichamberServer(
 	// contract tests and fast CI do not require a locally-built node-pty binary.
 	// The full runtime scenario and packed-artifact smoke still exercise real PTY.
 	const server = http.createServer(app);
+	let disposeTerminal: (() => void) | undefined;
 	if (options.terminal !== false) {
 		const { createTerminalRoutes } = await import("./terminalRoutes.js");
-		createTerminalRoutes(app, server);
+		disposeTerminal = createTerminalRoutes(app, server);
 	}
 
 	// Unknown API operations are explicit failures. A success-shaped fallback can
@@ -145,7 +174,6 @@ export async function createPichamberServer(
 			path: req.path,
 		});
 	});
-
 
 	// --- auth entry points (not behind requireAuth) ---
 
@@ -179,10 +207,13 @@ export async function createPichamberServer(
 		if (existing && existing.resetAt <= now) failedAttempts.delete(ip);
 		const current = failedAttempts.get(ip);
 		if (current && current.count >= RATE_LIMIT_MAX) {
-			res.status(429).json({ retryAfter: Math.ceil((current.resetAt - now) / 1000) });
+			res
+				.status(429)
+				.json({ retryAfter: Math.ceil((current.resetAt - now) / 1000) });
 			return;
 		}
-		const password = typeof req.body?.password === "string" ? req.body.password : "";
+		const password =
+			typeof req.body?.password === "string" ? req.body.password : "";
 		if (password !== auth.password) {
 			const e = current ?? { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
 			e.count += 1;
@@ -204,17 +235,24 @@ export async function createPichamberServer(
 	// one; otherwise return the static token (or a benign placeholder in open
 	// mode).
 	app.post("/auth/url-token", (req, res) => {
-		if (auth.password && !isValidSession(parseCookies(req.headers.cookie ?? "")[SESSION_COOKIE])) {
+		if (
+			auth.password &&
+			!isValidSession(parseCookies(req.headers.cookie ?? "")[SESSION_COOKIE])
+		) {
 			res.status(401).json({ error: "unauthorized" });
 			return;
 		}
-		const token = auth.password ? mintUrlToken() : auth.token || "pichamber-local";
+		const token = auth.password
+			? mintUrlToken()
+			: auth.token || "pichamber-local";
 		res.json({ token, expiresAt: Date.now() + URL_TOKEN_TTL_MS });
 	});
 
 	// Static hosting for the built UI + SPA fallback.
 	const uiDist =
-		options.uiDist ?? process.env.UI_DIST ?? path.resolve(process.cwd(), "../ui/dist");
+		options.uiDist ??
+		process.env.UI_DIST ??
+		path.resolve(process.cwd(), "../ui/dist");
 	app.use(express.static(uiDist));
 	app.get(/^(?!\/session|\/event|\/api).*/, (_req, res) => {
 		res.sendFile(path.join(uiDist, "index.html"));
@@ -232,16 +270,30 @@ export async function createPichamberServer(
 				server.listen(port, host, () => {
 					server.off("error", reject);
 					const address = server.address();
-					const boundPort = typeof address === "object" && address ? address.port : port;
-					const browserHost = host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
-					console.log(`pichamber opencode server listening on http://${host}:${boundPort}`);
-					resolve({ port: boundPort, host, url: `http://${browserHost}:${boundPort}` });
+					const boundPort =
+						typeof address === "object" && address ? address.port : port;
+					const browserHost =
+						host === "0.0.0.0" || host === "::" ? "127.0.0.1" : host;
+					console.log(
+						`pichamber opencode server listening on http://${host}:${boundPort}`,
+					);
+					resolve({
+						port: boundPort,
+						host,
+						url: `http://${browserHost}:${boundPort}`,
+					});
 				});
 			}),
 		stop: () =>
 			new Promise((resolve, reject) => {
-				if (!server.listening) { resolve(); return; }
-				server.close((error) => error ? reject(error) : resolve());
+				// Dispose terminal PTYs/WebSockets before closing the HTTP server so
+				// lingering shell subprocesses cannot keep the runtime process alive.
+				disposeTerminal?.();
+				if (!server.listening) {
+					resolve();
+					return;
+				}
+				server.close((error) => (error ? reject(error) : resolve()));
 			}),
 	};
 }
@@ -251,7 +303,9 @@ async function main(): Promise<void> {
 	await runtime.start();
 }
 
-const invokedPath = process.argv[1] ? pathToFileURL(path.resolve(process.argv[1])).href : "";
+const invokedPath = process.argv[1]
+	? pathToFileURL(path.resolve(process.argv[1])).href
+	: "";
 if (import.meta.url === invokedPath) {
 	main().catch((err: unknown) => {
 		const message = err instanceof Error ? err.message : String(err);

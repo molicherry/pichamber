@@ -1,12 +1,13 @@
 /**
- * opencode-compatible terminal surface — a real PTY backend (node-pty).
- * Spawns a shell per session and multiplexes I/O over the `/api/terminal/ws`
- * WebSocket using opencode's tagged-JSON protocol. Supports true resize and
- * TTY job control (interactive programs like vim/top work).
+ * opencode-compatible terminal surface with a runtime-selected PTY backend.
+ * Under Node the backend is node-pty (behavior unchanged); under Bun >= 1.4.0
+ * it is Bun.Terminal/Bun.spawn, because node-pty's spawn under Bun exits with
+ * exitCode 0 + SIGHUP before the authenticated WebSocket can attach. Both
+ * backends multiplex I/O over the `/api/terminal/ws` WebSocket using
+ * opencode's tagged-JSON protocol and support resize and TTY I/O.
  */
 
 import * as pty from "node-pty";
-import type { IPty } from "node-pty";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { Router } from "express";
@@ -25,10 +26,39 @@ interface WsMessage {
 	[key: string]: unknown;
 }
 
+type TerminalBackendName = "node-pty" | "bun-terminal";
+
+interface TerminalExit {
+	exitCode: number | null;
+	signal: string | null;
+}
+
+interface TerminalProcess {
+	readonly backend: TerminalBackendName;
+	write(data: string): void;
+	resize(cols: number, rows: number): void;
+	kill(): void;
+	onData(callback: (data: string) => void): void;
+	onExit(callback: (exit: TerminalExit) => void): void;
+}
+
+interface TerminalSpawnOptions {
+	shell: string;
+	args: string[];
+	cols: number;
+	rows: number;
+	cwd: string;
+	env: Record<string, string | undefined>;
+}
+
+interface TerminalBackend {
+	spawn(options: TerminalSpawnOptions): TerminalProcess;
+}
+
 interface TerminalSession {
 	id: string;
 	cwd: string;
-	proc: IPty;
+	proc: TerminalProcess;
 	cols: number;
 	rows: number;
 	buffer: string;
@@ -76,15 +106,196 @@ function resolveShell(shell: string | undefined): string {
 	}
 }
 
+const nodePtyBackend: TerminalBackend = {
+	spawn({ shell, args, cols, rows, cwd, env }) {
+		const proc = pty.spawn(shell, args, {
+			name: "xterm-256color",
+			cols,
+			rows,
+			cwd,
+			env,
+		});
+		return {
+			backend: "node-pty",
+			write: (data) => proc.write(data),
+			resize: (cols, rows) => proc.resize(cols, rows),
+			kill: () => proc.kill(),
+			onData: (callback) => proc.onData(callback),
+			onExit: (callback) =>
+				proc.onExit(({ exitCode, signal }) =>
+					callback({
+						exitCode,
+						// node-pty reports the terminating signal as a numeric signal
+						// number (1 = SIGHUP); normalize to the protocol's string field.
+						signal: signal !== undefined ? String(signal) : null,
+					}),
+				),
+		};
+	},
+};
+
+/**
+ * Minimal structural contract for the Bun runtime capability we use. Defined
+ * here (not imported from bun-types) so the Node TypeScript compilation path
+ * has no dependency on Bun's ambient types; the real `Bun` global is probed at
+ * runtime and checked against this shape before any terminal is spawned.
+ */
+interface BunTerminalLike {
+	write(data: string | Uint8Array): number;
+	resize(cols: number, rows: number): void;
+	close(): void;
+}
+
+interface BunSubprocessLike {
+	kill(signal?: string): void;
+}
+
+interface BunGlobalLike {
+	Terminal?: new (options: {
+		cols?: number;
+		rows?: number;
+		name?: string;
+		data?: (terminal: unknown, data: Uint8Array) => void;
+	}) => BunTerminalLike;
+	spawn?: (
+		command: string[],
+		options: {
+			cwd?: string;
+			env?: Record<string, string | undefined>;
+			terminal?: unknown;
+			onExit?: (
+				subprocess: unknown,
+				exitCode: number | null,
+				signalCode: string | number | null,
+			) => void;
+		},
+	) => BunSubprocessLike;
+}
+
+function createBunTerminalBackend(bun: BunGlobalLike): TerminalBackend {
+	const Terminal = bun.Terminal;
+	const spawn = bun.spawn;
+	if (typeof Terminal !== "function" || typeof spawn !== "function") {
+		throw new Error(
+			"Running under Bun but Bun.Terminal/Bun.spawn is unavailable. " +
+				"The native terminal backend requires Bun >= 1.4.0 (Bun.Terminal + Bun.spawn); " +
+				"upgrade Bun or run the server under Node 22+ to use the node-pty backend.",
+		);
+	}
+	return {
+		spawn({ shell, args, cols, rows, cwd, env }) {
+			// Bun.Terminal/Bun.spawn deliver data/exit on a later tick, but the
+			// process handle's callbacks are wired only after spawn returns. Buffer
+			// any early output/exit so no bytes or the exit event are lost.
+			let onDataListener: ((data: string) => void) | null = null;
+			let onExitListener: ((exit: TerminalExit) => void) | null = null;
+			const pendingData: string[] = [];
+			let pendingExit: TerminalExit | null = null;
+			let exited = false;
+			const decoder = new TextDecoder();
+
+			const terminal = new Terminal({
+				cols,
+				rows,
+				name: "xterm-256color",
+				data: (_terminal, data) => {
+					const text = decoder.decode(data, { stream: true });
+					if (onDataListener) onDataListener(text);
+					else pendingData.push(text);
+				},
+			});
+
+			const proc = spawn([shell, ...args], {
+				cwd,
+				env,
+				terminal,
+				onExit: (_subprocess, exitCode, signalCode) => {
+					exited = true;
+					const exit: TerminalExit = {
+						exitCode,
+						// Bun reports a signal name (e.g. "SIGHUP"); tolerate the
+						// numeric form in case an older Bun reports one.
+						signal:
+							signalCode === null || signalCode === undefined
+								? null
+								: String(signalCode),
+					};
+					if (onExitListener) onExitListener(exit);
+					else pendingExit = exit;
+				},
+			});
+
+			return {
+				backend: "bun-terminal",
+				write: (data) => {
+					try {
+						if (!exited) terminal.write(data);
+					} catch {
+						/* terminal may already be closed */
+					}
+				},
+				resize: (nextCols, nextRows) => {
+					try {
+						if (!exited) terminal.resize(nextCols, nextRows);
+					} catch {
+						/* terminal may already be closed */
+					}
+				},
+				kill: () => {
+					// SIGHUP matches node-pty's default hang-up semantics for a PTY
+					// session; closing the master also SIGHUPs the session leader.
+					try {
+						proc.kill("SIGHUP");
+					} catch {
+						/* already gone */
+					}
+					try {
+						terminal.close();
+					} catch {
+						/* already closed */
+					}
+				},
+				onData: (callback) => {
+					onDataListener = callback;
+					for (const data of pendingData.splice(0)) callback(data);
+				},
+				onExit: (callback) => {
+					onExitListener = callback;
+					if (pendingExit) callback(pendingExit);
+				},
+			};
+		},
+	};
+}
+
+function isBunRuntime(): boolean {
+	const global = globalThis as { Bun?: unknown };
+	return typeof global.Bun === "object" && global.Bun !== null;
+}
+
+function resolveTerminalBackend(): TerminalBackend {
+	if (!isBunRuntime()) return nodePtyBackend;
+	const bun = (globalThis as { Bun?: unknown }).Bun as BunGlobalLike;
+	return createBunTerminalBackend(bun);
+}
+
 class TerminalManager {
 	private readonly sessions = new Map<string, TerminalSession>();
+	private readonly wss: WebSocketServer;
+	private disposed = false;
 
-	constructor(server: Server) {
+	constructor(
+		server: Server,
+		private readonly backend: TerminalBackend,
+	) {
 		const auth = readAuthConfig();
-		const wss = new WebSocketServer({
+		this.wss = new WebSocketServer({
 			server,
 			path: "/api/terminal/ws",
-			verifyClient: (info: { origin: string; req: import("node:http").IncomingMessage }) => {
+			verifyClient: (info: {
+				origin: string;
+				req: import("node:http").IncomingMessage;
+			}) => {
 				// Reject cross-origin WebSocket upgrades (CSWSH mitigation).
 				// Extra origins come from the environment, never hardcoded.
 				const origin = info.origin || "";
@@ -115,7 +326,32 @@ class TerminalManager {
 				);
 			},
 		});
-		wss.on("connection", (ws) => this.handleConnection(ws));
+		this.wss.on("connection", (ws) => this.handleConnection(ws));
+	}
+
+	/**
+	 * Dispose every live terminal session and WebSocket client. This is the
+	 * server-owned teardown for the terminal surface: it kills PTY processes
+	 * (so they cannot keep the runtime process alive) and force-closes the
+	 * upgrade clients and the WebSocketServer before http.Server.close().
+	 * Idempotent — safe to call more than once.
+	 */
+	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		for (const id of [...this.sessions.keys()]) this.close(id);
+		for (const client of this.wss.clients) {
+			try {
+				client.terminate();
+			} catch {
+				/* already closed */
+			}
+		}
+		try {
+			this.wss.close();
+		} catch {
+			/* already closed */
+		}
 	}
 
 	create(cwd: string, options: Record<string, unknown>): TerminalSession {
@@ -132,8 +368,9 @@ class TerminalManager {
 		if (options.loginShell === true) {
 			args.push("-l");
 		}
-		const proc = pty.spawn(shell, args, {
-			name: "xterm-256color",
+		const proc = this.backend.spawn({
+			shell,
+			args,
 			cols,
 			rows,
 			cwd,
@@ -153,15 +390,13 @@ class TerminalManager {
 		};
 		proc.onData((data: string) => this.onOutput(session, data));
 		proc.onExit(({ exitCode, signal }) =>
-			this.onExit(session, exitCode, signal !== undefined ? String(signal) : null),
+			this.onExit(session, exitCode, signal),
 		);
 		this.sessions.set(id, session);
 		return session;
 	}
 
-	list(
-		cwd: string,
-	): Array<{
+	list(cwd: string): Array<{
 		sessionId: string;
 		cwd: string;
 		status: string;
@@ -315,8 +550,8 @@ class TerminalManager {
 				status: session.status,
 				exitCode: session.exitCode,
 				signal: session.signal ?? null,
-				ptyBackend: "node-pty",
-				terminalType: "node-pty",
+				ptyBackend: session.proc.backend,
+				terminalType: session.proc.backend,
 			}),
 		);
 	}
@@ -330,8 +565,9 @@ class TerminalManager {
 export function createTerminalRoutes(
 	app: import("express").Express,
 	server: Server,
-): void {
-	const manager = new TerminalManager(server);
+): () => void {
+	const backend = resolveTerminalBackend();
+	const manager = new TerminalManager(server, backend);
 	const router = Router();
 
 	router.get("/terminal/shells", (_req: Request, res: Response) => {
@@ -344,11 +580,15 @@ export function createTerminalRoutes(
 	});
 
 	router.post("/terminal/create", (req: Request, res: Response) => {
-		const requested = typeof req.body?.cwd === "string" && req.body.cwd ? req.body.cwd : "";
+		const requested =
+			typeof req.body?.cwd === "string" && req.body.cwd ? req.body.cwd : "";
 		const home = path.resolve(process.env.HOME ?? "/root");
 		const resolved = requested ? path.resolve(requested) : home;
 		// Confine the shell cwd to the home directory.
-		const cwd = resolved === home || resolved.startsWith(home + path.sep) ? resolved : home;
+		const cwd =
+			resolved === home || resolved.startsWith(home + path.sep)
+				? resolved
+				: home;
 		const session = manager.create(cwd, req.body ?? {});
 		res.status(201).json({
 			sessionId: session.id,
@@ -435,4 +675,6 @@ export function createTerminalRoutes(
 	});
 
 	app.use("/api", router);
+
+	return () => manager.dispose();
 }

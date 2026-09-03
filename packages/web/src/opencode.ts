@@ -20,9 +20,12 @@ import type {
 	SessionRuntime,
 } from "@pichamber/agent";
 import { listModelProviders } from "@pichamber/agent";
-import { nextEventId, toOpencodeEvent, type OpencodeEvent } from "./sseEvents.js";
+import {
+	nextEventId,
+	toOpencodeEvent,
+	type OpencodeEvent,
+} from "./sseEvents.js";
 import { resolveAgentDir } from "./piRuntime.js";
-
 
 /**
  * Global panel-event bus. Store-derived events flow through each SSE
@@ -49,7 +52,6 @@ export function subscribePanelEvents(
 	};
 }
 
-
 function toOpencodeSession(h: SessionHandle): Session {
 	return {
 		id: h.id,
@@ -59,7 +61,11 @@ function toOpencodeSession(h: SessionHandle): Session {
 		title: h.title,
 		version: "0",
 		tokens: h.tokens,
-		time: { created: h.createdAt, updated: h.updatedAt, ...(h.archived !== undefined ? { archived: h.archived } : {}) },
+		time: {
+			created: h.createdAt,
+			updated: h.updatedAt,
+			...(h.archived !== undefined ? { archived: h.archived } : {}),
+		},
 	};
 }
 
@@ -74,7 +80,8 @@ function readSettings(): Record<string, unknown> {
 	try {
 		const parsed: unknown = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
 		// Parse at the boundary: settings must be a plain object (never scalar/array).
-		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return {};
+		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
+			return {};
 		return parsed as Record<string, unknown>;
 	} catch {
 		return {};
@@ -141,13 +148,19 @@ async function configObject(): Promise<Record<string, unknown>> {
 	};
 }
 
-function mcpConfigPath(): string { return path.join(resolveAgentDir(), "mcp.json"); }
-function mcpCachePath(): string { return path.join(resolveAgentDir(), "mcp-cache.json"); }
+function mcpConfigPath(): string {
+	return path.join(resolveAgentDir(), "mcp.json");
+}
+function mcpCachePath(): string {
+	return path.join(resolveAgentDir(), "mcp-cache.json");
+}
 
 function readJsonObject(p: string): Record<string, unknown> | null {
 	try {
 		const parsed: unknown = JSON.parse(fs.readFileSync(p, "utf8"));
-		return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+		return typeof parsed === "object" &&
+			parsed !== null &&
+			!Array.isArray(parsed)
 			? (parsed as Record<string, unknown>)
 			: null;
 	} catch {
@@ -156,17 +169,33 @@ function readJsonObject(p: string): Record<string, unknown> | null {
 }
 
 /** Map a pi-mcp-adapter ServerEntry → opencode McpLocalConfig | McpRemoteConfig. */
-function toOpencodeMcpConfig(entry: Record<string, unknown>): Record<string, unknown> | null {
+function toOpencodeMcpConfig(
+	entry: Record<string, unknown>,
+): Record<string, unknown> | null {
 	const enabled = entry.disabled !== true;
 	const url = typeof entry.url === "string" ? entry.url : "";
 	const command = typeof entry.command === "string" ? entry.command : "";
-	const args = Array.isArray(entry.args) ? entry.args.filter((a): a is string => typeof a === "string") : [];
-	const mask = (obj: Record<string, string> | undefined): Record<string, string> | undefined =>
-		obj ? Object.fromEntries(Object.keys(obj).map((k) => [k, "••••••"])) : undefined;
-	const env = mask(entry.env && typeof entry.env === "object" ? (entry.env as Record<string, string>) : undefined);
+	const args = Array.isArray(entry.args)
+		? entry.args.filter((a): a is string => typeof a === "string")
+		: [];
+	const mask = (
+		obj: Record<string, string> | undefined,
+	): Record<string, string> | undefined =>
+		obj
+			? Object.fromEntries(Object.keys(obj).map((k) => [k, "••••••"]))
+			: undefined;
+	const env = mask(
+		entry.env && typeof entry.env === "object"
+			? (entry.env as Record<string, string>)
+			: undefined,
+	);
 	// Header/env values may hold secrets (API keys) — pi makes the connection
 	// server-side, so the browser only needs the keys, never the values.
-	const headers = mask(entry.headers && typeof entry.headers === "object" ? (entry.headers as Record<string, string>) : undefined);
+	const headers = mask(
+		entry.headers && typeof entry.headers === "object"
+			? (entry.headers as Record<string, string>)
+			: undefined,
+	);
 
 	if (url) {
 		return {
@@ -174,7 +203,11 @@ function toOpencodeMcpConfig(entry: Record<string, unknown>): Record<string, unk
 			url,
 			enabled,
 			...(headers ? { headers } : {}),
-			...(entry.auth === "oauth" ? { oauth: {} } : entry.auth === "bearer" || entry.auth === false ? { oauth: false } : {}),
+			...(entry.auth === "oauth"
+				? { oauth: {} }
+				: entry.auth === "bearer" || entry.auth === false
+					? { oauth: false }
+					: {}),
 		};
 	}
 	if (command) {
@@ -212,6 +245,10 @@ function cachedMcpServerNames(): Set<string> {
 export function createOpencodeRoutes(
 	app: Express,
 	registry: SessionRegistry,
+	options: {
+		/** E2E-only: hook that returns the HTTP status for the next prompt to fail with, or null. */
+		nextPromptFailure?: () => { status: number; message: string } | null;
+	} = {},
 ): void {
 	const router = Router();
 
@@ -227,7 +264,9 @@ export function createOpencodeRoutes(
 	// Never expose credential/material paths, even though they live under HOME.
 	const isSensitivePath = (p: string): boolean =>
 		/(^|\/)(\.ssh|\.aws|\.docker|\.kube|\.config\/gh|\.gnupg)(\/|$)/.test(p) ||
-		/(^|\/)(\.env(\.\w+)?|\.git-credentials|\.netrc|\.gitconfig|id_rsa|id_ed25519)(\/|$)/.test(p);
+		/(^|\/)(\.env(\.\w+)?|\.git-credentials|\.netrc|\.gitconfig|id_rsa|id_ed25519)(\/|$)/.test(
+			p,
+		);
 
 	const getRuntime = async (id: string): Promise<SessionRuntime | null> => {
 		const existing = registry.get(id);
@@ -322,6 +361,27 @@ export function createOpencodeRoutes(
 		}
 		const messageID =
 			typeof req.body?.messageID === "string" ? req.body.messageID : undefined;
+		// E2E-only fault seam: force the next prompt request to fail with a given
+		// HTTP status (e.g. 503) so the vendored UI's send-failure path is
+		// exercised. Production servers never pass this hook, so a normal prompt
+		// always dispatches and returns 204.
+		const failure = options.nextPromptFailure?.();
+		if (failure) {
+			// Definitely-not-dispatched contract. The fault is injected before
+			// pushUser()/client.prompt(), so the prompt never ran and the client may
+			// safely restore the user's unsent text. The marker is machine-readable
+			// (code + accepted:false + header) so the app-owned recovery wrapper can
+			// correlate it; ambiguous transport failures carry no marker and stay
+			// untouched. Production servers never pass this hook, so a normal
+			// /prompt_async still dispatches and returns 204.
+			res.setHeader("X-Pichamber-Prompt-Accepted", "false");
+			res.status(failure.status).json({
+				error: failure.message,
+				code: "prompt_not_dispatched",
+				accepted: false,
+			});
+			return;
+		}
 		rt.store.pushUser(text, messageID);
 		rt.client.prompt(text).catch((err: unknown) => {
 			console.error(`[prompt] session ${rt.id} failed:`, err);
@@ -345,7 +405,10 @@ export function createOpencodeRoutes(
 	// time.archived: positive timestamp = archived; 0 = active (falsy sentinel).
 	router.patch("/session/:id", async (req: Request, res: Response) => {
 		const id = paramId(req);
-		const body = (req.body ?? {}) as { title?: unknown; time?: { archived?: unknown } };
+		const body = (req.body ?? {}) as {
+			title?: unknown;
+			time?: { archived?: unknown };
+		};
 		if (typeof body.title === "string" && body.title.trim()) {
 			await registry.rename(id, body.title.trim());
 		}
@@ -411,48 +474,61 @@ export function createOpencodeRoutes(
 		});
 
 		// Permission prompts (pi permission extensions via the injected uiContext).
-		const unsubscribePermissions = registry.permissionBroker.subscribe((prompt) => {
-			// question.asked: pi's uiContext.input is a free-text question.
-			if (prompt.kind === "input") {
-				const qevent = {
+		const unsubscribePermissions = registry.permissionBroker.subscribe(
+			(prompt) => {
+				// question.asked: pi's uiContext.input is a free-text question.
+				if (prompt.kind === "input") {
+					const qevent = {
+						id: nextEventId(),
+						type: "question.asked",
+						properties: {
+							id: prompt.id,
+							sessionID: prompt.sessionId,
+							questions: [
+								{
+									question: prompt.title,
+									header: prompt.title.slice(0, 30),
+									options: [],
+								},
+							],
+						},
+					};
+					res.write(`data: ${JSON.stringify(qevent)}\n\n`);
+					return;
+				}
+
+				// Map pi's uiContext prompts onto opencode's permission-card shape so
+				// the vendored PermissionCard renders the tool + command correctly.
+				const command = prompt.title
+					.match(/Dangerous command:\s*\n\n([\s\S]*?)\n\nAllow\?/)?.[1]
+					?.trim();
+				const isDangerousBash =
+					prompt.kind === "select" && command !== undefined;
+				const writeEdit = prompt.title.match(/^Allow (write|edit)\?/)?.[1];
+				const tool = isDangerousBash ? "bash" : (writeEdit ?? prompt.kind);
+				const event = {
 					id: nextEventId(),
-					type: "question.asked",
+					type: "permission.asked",
 					properties: {
 						id: prompt.id,
 						sessionID: prompt.sessionId,
-						questions: [{ question: prompt.title, header: prompt.title.slice(0, 30), options: [] }],
+						permission: tool,
+						patterns: [],
+						metadata: {
+							kind: prompt.kind,
+							title: prompt.title,
+							message: prompt.message,
+							options: prompt.options,
+							...(command
+								? { command, description: "Dangerous shell command" }
+								: {}),
+						},
+						always: [],
 					},
 				};
-				res.write(`data: ${JSON.stringify(qevent)}\n\n`);
-				return;
-			}
-
-			// Map pi's uiContext prompts onto opencode's permission-card shape so
-			// the vendored PermissionCard renders the tool + command correctly.
-			const command = prompt.title.match(/Dangerous command:\s*\n\n([\s\S]*?)\n\nAllow\?/)?.[1]?.trim();
-			const isDangerousBash = prompt.kind === "select" && command !== undefined;
-			const writeEdit = prompt.title.match(/^Allow (write|edit)\?/)?.[1];
-			const tool = isDangerousBash ? "bash" : writeEdit ?? prompt.kind;
-			const event = {
-				id: nextEventId(),
-				type: "permission.asked",
-				properties: {
-					id: prompt.id,
-					sessionID: prompt.sessionId,
-					permission: tool,
-					patterns: [],
-					metadata: {
-						kind: prompt.kind,
-						title: prompt.title,
-						message: prompt.message,
-						options: prompt.options,
-						...(command ? { command, description: "Dangerous shell command" } : {}),
-					},
-					always: [],
-				},
-			};
-			res.write(`data: ${JSON.stringify(event)}\n\n`);
-		});
+				res.write(`data: ${JSON.stringify(event)}\n\n`);
+			},
+		);
 
 		req.on("close", () => {
 			sseConnections.delete(res);
@@ -464,11 +540,21 @@ export function createOpencodeRoutes(
 	};
 	router.get("/event", sseHandler);
 	router.get("/global/event", sseHandler);
+	// Browser notifications (openchamber:notification) stream. The web runtime
+	// reuses the same SSE lifecycle/bus machinery as /event: an authenticated
+	// connected frame, keepalive, and close cleanup. It produces no
+	// openchamber:notification events locally, so the stream is a valid
+	// long-lived no-op rather than a 404-driven EventSource reconnect loop.
+	router.get("/notifications/stream", sseHandler);
 
 	// E2E fault control: drop all live SSE streams so the UI must reconnect.
 	router.post("/_e2e/drop-sse", (_req: Request, res: Response) => {
 		for (const stream of sseConnections) {
-			try { stream.end(); } catch { /* already closed */ }
+			try {
+				stream.end();
+			} catch {
+				/* already closed */
+			}
 		}
 		res.json({ dropped: sseConnections.size });
 	});
@@ -478,35 +564,50 @@ export function createOpencodeRoutes(
 		const id = typeof req.params["id"] === "string" ? req.params["id"] : "";
 		const reply = req.body?.reply;
 		const allowed = reply !== "reject";
-		const message = typeof req.body?.message === "string" ? req.body.message : undefined;
+		const message =
+			typeof req.body?.message === "string" ? req.body.message : undefined;
 		const ok = registry.permissionBroker.respond(id, allowed, message);
 		res.json(ok);
 	});
 
 	// Question reply — opencode posts { answers: string[][] } (one answer array
 	// per question; pi's input prompt has a single free-text answer).
-	router.post("/session/:id/question/:requestId/reply", (req: Request, res: Response) => {
-		const requestId = typeof req.params["requestId"] === "string" ? req.params["requestId"] : "";
-		const answers = req.body?.answers;
-		const first = Array.isArray(answers) && Array.isArray(answers[0]) ? answers[0] : [];
-		const value = first.length > 0 ? String(first[0]) : "";
-		const ok = registry.permissionBroker.respond(requestId, true, value);
-		res.json(ok);
-	});
+	router.post(
+		"/session/:id/question/:requestId/reply",
+		(req: Request, res: Response) => {
+			const requestId =
+				typeof req.params["requestId"] === "string"
+					? req.params["requestId"]
+					: "";
+			const answers = req.body?.answers;
+			const first =
+				Array.isArray(answers) && Array.isArray(answers[0]) ? answers[0] : [];
+			const value = first.length > 0 ? String(first[0]) : "";
+			const ok = registry.permissionBroker.respond(requestId, true, value);
+			res.json(ok);
+		},
+	);
 
 	// Question reply/reject — SDK v1 paths carry no session in the URL.
 	// (The vendored UI's `question.reply`/`question.reject` call /question/:id/...).
 	router.post("/question/:requestId/reply", (req: Request, res: Response) => {
-		const requestId = typeof req.params["requestId"] === "string" ? req.params["requestId"] : "";
+		const requestId =
+			typeof req.params["requestId"] === "string"
+				? req.params["requestId"]
+				: "";
 		const answers = req.body?.answers;
-		const first = Array.isArray(answers) && Array.isArray(answers[0]) ? answers[0] : [];
+		const first =
+			Array.isArray(answers) && Array.isArray(answers[0]) ? answers[0] : [];
 		const value = first.length > 0 ? String(first[0]) : "";
 		const ok = registry.permissionBroker.respond(requestId, true, value);
 		res.json(ok);
 	});
 
 	router.post("/question/:requestId/reject", (req: Request, res: Response) => {
-		const requestId = typeof req.params["requestId"] === "string" ? req.params["requestId"] : "";
+		const requestId =
+			typeof req.params["requestId"] === "string"
+				? req.params["requestId"]
+				: "";
 		const ok = registry.permissionBroker.respond(requestId, false);
 		res.json(ok);
 	});
@@ -553,7 +654,10 @@ export function createOpencodeRoutes(
 	});
 	router.put("/config/settings", (req: Request, res: Response) => {
 		const incoming = req.body && typeof req.body === "object" ? req.body : {};
-		const merged = { ...readSettings(), ...(incoming as Record<string, unknown>) };
+		const merged = {
+			...readSettings(),
+			...(incoming as Record<string, unknown>),
+		};
 		writeSettings(merged);
 		res.json(merged);
 	});
@@ -659,7 +763,8 @@ export function createOpencodeRoutes(
 	// File write (draft persistence) — HOME-confined like fs/read.
 	router.post("/fs/write", (req: Request, res: Response) => {
 		const p = typeof req.body?.path === "string" ? req.body.path : "";
-		const content = typeof req.body?.content === "string" ? req.body.content : "";
+		const content =
+			typeof req.body?.content === "string" ? req.body.content : "";
 		if (!p || !isWithinHome(p) || isSensitivePath(p)) {
 			res.status(403).json({ error: "forbidden" });
 			return;
@@ -713,7 +818,8 @@ function projectsFromSettings(cwd: string): OpencodeProject[] {
 			vcs: "git",
 			time: {
 				created: typeof p.addedAt === "number" ? p.addedAt : Date.now(),
-				updated: typeof p.lastOpenedAt === "number" ? p.lastOpenedAt : Date.now(),
+				updated:
+					typeof p.lastOpenedAt === "number" ? p.lastOpenedAt : Date.now(),
 			},
 			sandboxes: [],
 		};
