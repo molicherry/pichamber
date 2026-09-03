@@ -1,5 +1,5 @@
 import type { ContextPartMetadata } from '@/lib/messages/contextParts';
-import { createOpencodeClient, OpencodeClient } from "@opencode-ai/sdk/v2";
+import { createOpencodeClient, type OpencodeClient } from "@opencode-ai/sdk/v2";
 import type { PermissionV2Request, PermissionV2Effect, PermissionV2Source } from "@opencode-ai/sdk/v2/client";
 import type { FilesAPI } from "../api/types";
 import { getDesktopHomeDirectory } from "../desktop";
@@ -63,6 +63,41 @@ function formatSdkError(error: unknown): string {
     return String(error);
   }
 }
+
+/**
+ * The server's "definitely not dispatched" contract: a prompt rejection that
+ * occurred before pushUser()/client.prompt(), so the user's text never ran and
+ * may be safely restored. This is the only failure shape that authorizes
+ * automatic composer restoration; ambiguous transport failures carry no marker.
+ */
+function isPromptNotDispatchedPayload(payload: unknown): boolean {
+  if (!payload || typeof payload !== "object") return false;
+  const code = (payload as { code?: unknown }).code;
+  const accepted = (payload as { accepted?: unknown }).accepted;
+  return code === "prompt_not_dispatched" || accepted === false;
+}
+
+function detectPromptNotDispatched(body: string): boolean {
+  if (!body) return false;
+  try {
+    if (isPromptNotDispatchedPayload(JSON.parse(body))) return true;
+  } catch {
+    // Non-JSON body: fall through to textual detection below.
+  }
+  return body.includes("prompt_not_dispatched") || /"accepted"\s*:\s*false/.test(body);
+}
+
+/** True when the error positively proves the prompt was never dispatched. */
+export function isPromptNotDispatchedFailure(error: unknown): boolean {
+  if (error && typeof error === "object" && (error as { promptNotDispatched?: unknown }).promptNotDispatched === true) {
+    return true;
+  }
+  if (error instanceof Error) {
+    return error.message.includes("prompt_not_dispatched") || /"accepted"\s*:\s*false/.test(error.message);
+  }
+  return false;
+}
+
 type SdkResult<T> = {
   data?: T;
   error?: unknown;
@@ -969,6 +1004,7 @@ class OpencodeService {
     this.assertRuntimeUnchanged(params.runtimeKey);
 
     let response: Response;
+    let resultError: unknown;
 
     try {
       const result = await this.client.session.promptAsync({
@@ -985,6 +1021,7 @@ class OpencodeService {
         ...(params.format ? { format: params.format } : {}),
         parts,
       });
+      resultError = (result as SdkResult<unknown>).error;
       if (result.response instanceof Response) {
         response = result.response;
       } else if (result.error) {
@@ -1026,8 +1063,11 @@ class OpencodeService {
       // ignore
     }
     const suffix = detail && detail.trim().length > 0 ? `: ${detail.trim()}` : '';
-    const error = new Error(`Failed to send message (${response.status})${suffix}`) as Error & { status?: number };
+    const error = new Error(`Failed to send message (${response.status})${suffix}`) as Error & { status?: number; promptNotDispatched?: boolean };
     error.status = response.status;
+    if (detectPromptNotDispatched(detail) || isPromptNotDispatchedPayload(resultError)) {
+      error.promptNotDispatched = true;
+    }
     recordProviderError(params.providerID, response.status);
     throw error;
   }

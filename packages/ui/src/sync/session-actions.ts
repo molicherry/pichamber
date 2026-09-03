@@ -9,7 +9,7 @@ import { useSessionUIStore } from "./session-ui-store"
 import { useInputStore } from "./input-store"
 import type { ChildStoreManager } from "./child-store"
 import { computeSubtreeIds } from "./scoped-blocking-requests"
-import { opencodeClient } from "@/lib/opencode/client"
+import { opencodeClient, isPromptNotDispatchedFailure } from "@/lib/opencode/client"
 import { mergeSessionDirectoryMetadata, resolveGlobalSessionDirectory, useGlobalSessionsStore } from "@/stores/useGlobalSessionsStore"
 import { useConfigStore } from "@/stores/useConfigStore"
 import { registerSessionDirectory } from "./sync-refs"
@@ -383,6 +383,12 @@ function getErrorStatus(error: unknown): number | null {
 }
 
 function isAmbiguousSendFailure(error: unknown): boolean {
+  // A positively-correlated "prompt not dispatched" failure is definitive: the
+  // server proved the prompt never ran, so there is no in-flight run to confirm
+  // and no duplicate to deduplicate. Treat it as non-ambiguous so the
+  // send-failure log records the truth and the confirmation refetch is skipped.
+  if (isPromptNotDispatchedFailure(error)) return false
+
   // Authoritative first: the transport that lost the request says whether it
   // had already been dispatched. The text matching below only covers direct
   // fetch/HTTP failures, whose wording we do not control either — relay tunnel

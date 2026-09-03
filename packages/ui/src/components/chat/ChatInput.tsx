@@ -68,7 +68,7 @@ import { GitHubPrPickerDialog } from '@/components/session/GitHubPrPickerDialog'
 import { Icon } from "@/components/icon/Icon";
 import { DraftPresetChips } from './DraftPresetChips';
 import { useChatSearchDirectory } from '@/hooks/useChatSearchDirectory';
-import { opencodeClient } from '@/lib/opencode/client';
+import { opencodeClient, isPromptNotDispatchedFailure } from '@/lib/opencode/client';
 import { useGitStore, useIsGitRepo } from '@/stores/useGitStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { useSkillsStore } from '@/stores/useSkillsStore';
@@ -97,7 +97,7 @@ import {
 } from './composer/language/mentions';
 import { collectKnownTokenNames } from './composer/language/prefixTokens';
 import { resolveAutocompleteTrigger, type AutocompleteKind } from './composer/language/triggers';
-import { type ComposerLanguageContext } from './composer/language/tokenize';
+import type { ComposerLanguageContext } from './composer/language/tokenize';
 import {
     ComposerEditor,
     type ComposerChange,
@@ -975,6 +975,10 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
         // Snapshot the draft and current-session identity before the first
         // async gap so a later sidebar selection cannot reroute the send.
         const capturedDraftSnapshot = newSessionDraftOpen ? { ...newSessionDraft } : null;
+        // A new-session draft materializes into a real session before the send
+        // resolves; capture that here so a failed send restores into the
+        // now-visible session instead of the pre-materialization draft identity.
+        const sendStartedFromDraft = capturedDraftSnapshot !== null;
         const inputSnapshot = options?.presetText != null
             ? {
                 message: options.presetText,
@@ -1390,11 +1394,32 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
             console.error('Message send failed:', rawMessage || error);
             restoreConsumedDrafts();
 
-            // A failed send returns the typed prompt no matter WHY it failed —
-            // auth, network, server, anything. Losing a long prompt to a toast
-            // is the one outcome this handler must never produce.
-            if (inputSnapshot.message) {
-                if (currentChatDraftIdentityRef.current !== chatDraftIdentity) {
+            // Restore the typed prompt only for a positively-correlated
+            // "prompt_not_dispatched" / accepted:false failure. The server proved
+            // the prompt never ran, so a retry cannot duplicate a call. Ambiguous
+            // transport/tunnel failures (which may have reached the server) are
+            // left untouched so they cannot be silently re-queued.
+            if (isPromptNotDispatchedFailure(error) && inputSnapshot.message) {
+                if (sendStartedFromDraft) {
+                    // A new-session draft materialized into a real session while the
+                    // send was in flight. That session is now the visible composer, so
+                    // restore into ITS identity — not the pre-materialization draft
+                    // identity this closure still holds. This is not a user-initiated
+                    // session switch and must not be treated as one.
+                    const currentSessionIdNow = useSessionUIStore.getState().currentSessionId;
+                    const currentIdentity = currentSessionIdNow
+                        ? resolveChatDraftIdentity(currentSessionIdNow)
+                        : chatDraftIdentity;
+                    const currentInput = composerRef.current?.getValue() ?? messageRef.current;
+                    if (currentInput && currentInput !== inputSnapshot.message) {
+                        // Newer typing already lives in the composer; queue the failed
+                        // text instead of clobbering it.
+                        useInputStore.getState().setPendingInputText(inputSnapshot.message, 'append');
+                    } else {
+                        setMessage(inputSnapshot.message);
+                        writeChatDraft(currentIdentity, inputSnapshot.message, confirmedMentionsRef.current);
+                    }
+                } else if (currentChatDraftIdentityRef.current !== chatDraftIdentity) {
                     // The user switched sessions mid-send: restore into that
                     // session's persisted draft, not the visible composer.
                     writeChatDraft(chatDraftIdentity, inputSnapshot.message, confirmedMentionsRef.current);

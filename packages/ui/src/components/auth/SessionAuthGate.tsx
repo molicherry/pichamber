@@ -341,6 +341,10 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
   const skipAuth = vscodeRuntime;
   const showHostSwitcher = React.useMemo(() => isDesktopShell() && !vscodeRuntime, [vscodeRuntime]);
   const [state, setState] = React.useState<GateState>(() => (skipAuth ? 'authenticated' : 'pending'));
+  // Gate the App mount until the authenticated settings/project bootstrap has
+  // finished. Auth-bypassed runtimes (VS Code) never run the bootstrap, so they
+  // start ready; password/relay runtimes start locked until the first resync.
+  const [bootstrapReady, setBootstrapReady] = React.useState<boolean>(() => skipAuth);
   const [password, setPassword] = React.useState('');
   const [isSubmitting, setIsSubmitting] = React.useState(false);
   const [errorMessage, setErrorMessage] = React.useState('');
@@ -555,8 +559,9 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
   }, [checkStatus, resetTransientRetry, skipAuth]);
 
   React.useEffect(() => {
-    if (!skipAuth && state === 'locked') {
+    if (!skipAuth && (state === 'locked' || state === 'pending')) {
       hasResyncedRef.current = false;
+      setBootstrapReady(false);
     }
   }, [skipAuth, state]);
 
@@ -600,13 +605,26 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
       // settings document may carry another window's pointers.
       const isBootstrapResync = !hasBootstrapResyncedRef.current;
       hasBootstrapResyncedRef.current = true;
+      let cancelled = false;
       void (async () => {
-        await initializeAppearancePreferences();
-        await syncDesktopSettings({ adoptWorkspace: isBootstrapResync });
-        if (isBootstrapResync) {
-          await applyPersistedDirectoryPreferences();
+        try {
+          await initializeAppearancePreferences();
+          await syncDesktopSettings({ adoptWorkspace: isBootstrapResync });
+          if (isBootstrapResync) {
+            await applyPersistedDirectoryPreferences();
+          }
+        } finally {
+          // A settings failure must never leave the gate permanently blank: the
+          // App's own startup recovery remains the fallback. Guard against the
+          // gate leaving the authenticated state mid-resync.
+          if (!cancelled) {
+            setBootstrapReady(true);
+          }
         }
       })();
+      return () => {
+        cancelled = true;
+      };
     }
   }, [skipAuth, state]);
 
@@ -1013,6 +1031,10 @@ export const SessionAuthGate: React.FC<SessionAuthGateProps> = ({
         </div>
       </AuthShell>
     );
+  }
+
+  if (state === 'authenticated' && !bootstrapReady) {
+    return <LoadingScreen />;
   }
 
   return (
