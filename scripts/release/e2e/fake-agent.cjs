@@ -41,7 +41,7 @@ class DeterministicClient {
 		this.listeners = new Set();
 		this.aborted = false;
 		this._abortWaiters = [];
-		this.failNextPrompt = null; // { status, message }
+		this.failNextAgentRun = null; // { status, message } — accepted-204-then-async-error seam
 		this.lastReply = "";
 	}
 
@@ -104,9 +104,13 @@ class DeterministicClient {
 	}
 
 	async prompt(text) {
-		if (this.failNextPrompt) {
-			const failure = this.failNextPrompt;
-			this.failNextPrompt = null;
+		if (this.failNextAgentRun) {
+			const failure = this.failNextAgentRun;
+			this.failNextAgentRun = null;
+			// Accepted-204-then-async-failure: the prompt request already returned
+			// 204 and dispatched; the failure surfaces later as an agent status
+			// error. Distinct from the HTTP-level 503 fault (see
+			// DeterministicRegistry.failNextPrompt / takeNextPromptFailure).
 			this.emit({ type: "agent_start" });
 			this.emit({ type: "status", status: "error", error: failure.message || "E2E_PROMPT_FAILURE" });
 			return;
@@ -117,7 +121,6 @@ class DeterministicClient {
 
 		if (trimmed === "E2E:STREAM" || trimmed === "E2E:AFTER_RECONNECT") {
 			this.emit({ type: "agent_start" });
-			const reply = trimmed === "E2E:STREAM" ? REPLY_STREAM : REPLY_RECONNECTED;
 			const parts =
 				trimmed === "E2E:STREAM"
 					? ["PICHAMBER_", "STREAM_", "OK"]
@@ -216,18 +219,32 @@ class DeterministicRegistry {
 		this.listeners = new Set();
 		this.nextId = 1;
 		this._failNextPrompt = null;
+		this._failNextAgentRun = null;
 		this._dropSse = false;
 	}
 
 	// ---- fault controls (harness-only) ----
+	// HTTP-level prompt failure: the next POST /prompt(_async) returns `status`
+	// instead of dispatching. Consumed once by the web layer's prompt handler via
+	// takeNextPromptFailure.
 	failNextPrompt(status, message) {
 		this._failNextPrompt = { status, message };
 	}
+	takeNextPromptFailure() {
+		const failure = this._failNextPrompt;
+		this._failNextPrompt = null;
+		return failure;
+	}
+	// Accepted-204-then-async-failure: the prompt request succeeds, then the
+	// client emits an agent status error. Models post-dispatch model failures
+	// without an HTTP error status.
+	failNextAgentRun(status, message) {
+		this._failNextAgentRun = { status, message };
+	}
 	dropAllSseConnections() {
 		this._dropSse = true;
-		for (const listener of [...this.listeners]) {
-			// signal the transport to drop; the harness wires this to an actual close
-		}
+		// The harness wires this flag to an actual SSE close via the web layer's
+		// /api/_e2e/drop-sse endpoint; the fake registry itself only records intent.
 		return this._dropSse;
 	}
 
@@ -256,9 +273,9 @@ class DeterministicRegistry {
 			permissionBroker: this.permissionBroker,
 			todoState,
 		});
-		if (this._failNextPrompt) {
-			client.failNextPrompt = this._failNextPrompt;
-			this._failNextPrompt = null;
+		if (this._failNextAgentRun) {
+			client.failNextAgentRun = this._failNextAgentRun;
+			this._failNextAgentRun = null;
 		}
 		const store = new SessionStore(client, {
 			id,

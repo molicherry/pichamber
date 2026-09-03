@@ -59,17 +59,21 @@ function seedSettings(home, workspace) {
 	fs.mkdirSync(configDir, { recursive: true });
 	fs.writeFileSync(
 		path.join(configDir, "settings.json"),
-		JSON.stringify({
-			projects: [
-				{
-					id: "e2e-project",
-					path: workspace,
-					label: "E2E Workspace",
-					addedAt: 1700000000000,
-					lastOpenedAt: 1700000000000,
-				},
-			],
-		}, null, 2),
+		JSON.stringify(
+			{
+				projects: [
+					{
+						id: "e2e-project",
+						path: workspace,
+						label: "E2E Workspace",
+						addedAt: 1700000000000,
+						lastOpenedAt: 1700000000000,
+					},
+				],
+			},
+			null,
+			2,
+		),
 	);
 }
 
@@ -82,12 +86,27 @@ function ensureNodePty() {
 		// fall through to an explicit rebuild
 	}
 	const { execFileSync } = require("node:child_process");
-	const nodePtyPackage = require.resolve("../../../packages/web/node_modules/node-pty/package.json");
+	const nodePtyPackage = require.resolve(
+		"../../../packages/web/node_modules/node-pty/package.json",
+	);
 	const nodePtyDir = path.dirname(fs.realpathSync(nodePtyPackage));
-	const npmRoot = execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim();
-	const nodeGyp = path.join(npmRoot, "npm", "node_modules", "node-gyp", "bin", "node-gyp.js");
-	if (!fs.existsSync(nodeGyp)) throw new Error(`npm's bundled node-gyp not found at ${nodeGyp}`);
-	execFileSync(process.execPath, [nodeGyp, "rebuild"], { cwd: nodePtyDir, stdio: "inherit" });
+	const npmRoot = execFileSync("npm", ["root", "-g"], {
+		encoding: "utf8",
+	}).trim();
+	const nodeGyp = path.join(
+		npmRoot,
+		"npm",
+		"node_modules",
+		"node-gyp",
+		"bin",
+		"node-gyp.js",
+	);
+	if (!fs.existsSync(nodeGyp))
+		throw new Error(`npm's bundled node-gyp not found at ${nodeGyp}`);
+	execFileSync(process.execPath, [nodeGyp, "rebuild"], {
+		cwd: nodePtyDir,
+		stdio: "inherit",
+	});
 }
 
 // Bootstrap probe prefixes that pichamber honestly does not support. Their
@@ -103,7 +122,6 @@ const BOOTSTRAP_UNSUPPORTED_PREFIXES = [
 	"/api/command",
 	"/api/git/identities",
 	"/api/github/auth/status",
-	"/api/notifications/",
 	"/api/permission-auto-accept",
 	"/api/session-folders",
 	"/api/push/",
@@ -124,7 +142,26 @@ const EGRESS_ALLOW_PREFIXES = ["https://models.dev/"];
 function isBootstrapUnsupported(urlPath) {
 	const pathOnly = urlPath.split("?")[0];
 	if (BOOTSTRAP_UNSUPPORTED_EXACT.includes(pathOnly)) return true;
-	return BOOTSTRAP_UNSUPPORTED_PREFIXES.some((prefix) => pathOnly.includes(prefix));
+	return BOOTSTRAP_UNSUPPORTED_PREFIXES.some((prefix) =>
+		pathOnly.includes(prefix),
+	);
+}
+
+// Fire-and-forget terminal control calls whose routes return 204 No Content.
+// Chromium reports a completed no-body 204 fetch as requestfailed
+// (net::ERR_ABORTED) once the unconsumed Response is garbage-collected — a
+// browser lifecycle artifact, not a transport failure. We record the exact
+// request that already delivered a 204 so the harness can distinguish that
+// post-204 abort from a real failure (an abort before any 204, or any non-2xx).
+function terminalControlKind(url) {
+	let pathname;
+	try {
+		pathname = new URL(url).pathname;
+	} catch {
+		return null;
+	}
+	const match = pathname.match(/\/api\/terminal\/[^/]+\/(appearance|resize)$/);
+	return match ? match[1] : null;
 }
 
 async function createHarness(options = {}) {
@@ -163,6 +200,7 @@ async function createHarness(options = {}) {
 		port: 0,
 		registry,
 		terminal: options.terminal === true,
+		nextPromptFailure: () => registry.takeNextPromptFailure(),
 	});
 	const started = await runtime.start(0, "127.0.0.1");
 	const serverOrigin = `http://127.0.0.1:${started.port}`;
@@ -198,6 +236,11 @@ async function createHarness(options = {}) {
 	const consoleErrors = [];
 	const requestFailures = [];
 	const unexpectedResponses = [];
+	// Terminal control calls (appearance/resize) that already delivered a 204.
+	// Keyed by the Request object identity so a genuine later failure on the same
+	// endpoint (a different request) is still counted.
+	const terminalControl204Requests = new Set();
+	const terminalControl204s = { appearance: 0, resize: 0 };
 	page.on("pageerror", (error) => pageErrors.push(error.message));
 	page.on("console", (msg) => {
 		if (msg.type() !== "error") return;
@@ -224,15 +267,40 @@ async function createHarness(options = {}) {
 		if (url.includes("/session/") && url.includes("/abort")) return;
 		if (url.includes("/api/event")) return; // SSE long-lived stream
 		if (url.includes("/session/") && url.includes("/abort")) return;
+		// A terminal control request that already returned 204 is a completed
+		// fire-and-forget call; its later net::ERR_ABORTED is the no-body
+		// lifecycle artifact. Only skip when the 204 for THIS exact request was
+		// observed — any abort before the 204 still fails the case.
+		if (terminalControl204Requests.has(request)) return;
 		requestFailures.push(`${request.method()} ${url}`);
 	});
 	page.on("response", (response) => {
+		const controlKind = terminalControlKind(response.url());
+		if (response.status() === 204 && controlKind) {
+			terminalControl204Requests.add(response.request());
+			terminalControl204s[controlKind] += 1;
+		}
 		if (response.status() < 400) return;
 		const pathOnly = response.request().url().replace(serverOrigin, "");
 		if (isBootstrapUnsupported(pathOnly)) return;
 		// fs/read 403/404 is file-semantics (missing/forbidden), not endpoint missing.
-		if (pathOnly.includes("/api/fs/read") && (response.status() === 403 || response.status() === 404)) return;
-		unexpectedResponses.push(`${response.status()} ${response.request().method()} ${pathOnly}`);
+		if (
+			pathOnly.includes("/api/fs/read") &&
+			(response.status() === 403 || response.status() === 404)
+		)
+			return;
+		unexpectedResponses.push(
+			`${response.status()} ${response.request().method()} ${pathOnly}`,
+		);
+	});
+
+	// WebSocket tracking: a successful upgrade fires `websocket` (no 101 proof
+	// exists otherwise); capture received frames so terminal I/O can be asserted.
+	const websockets = [];
+	page.on("websocket", (ws) => {
+		const frames = [];
+		ws.on("framereceived", (frame) => frames.push(frame.payload));
+		websockets.push({ url: ws.url(), frames });
 	});
 
 	return {
@@ -247,6 +315,7 @@ async function createHarness(options = {}) {
 		context,
 		page,
 		registry,
+		websockets,
 		observability: {
 			pageErrors,
 			consoleErrors,
@@ -255,25 +324,76 @@ async function createHarness(options = {}) {
 			unexpectedResponses,
 		},
 		async waitReady() {
-			await this.page.waitForFunction(() => document.body.innerText.trim().length > 0, null, { timeout: 30_000 });
+			await this.page.waitForFunction(
+				() => document.body.innerText.trim().length > 0,
+				null,
+				{ timeout: 30_000 },
+			);
 			// Close the first-run "Add project directory" prompt when the local
 			// projects cache is empty (settings sync is async).
-			const dialog = this.page.locator('[role="dialog"]').filter({ hasText: "Add project directory" });
+			const dialog = this.page
+				.locator('[role="dialog"]')
+				.filter({ hasText: "Add project directory" });
 			if (await dialog.count()) {
 				await this.page.keyboard.press("Escape");
-				await dialog.waitFor({ state: "detached", timeout: 10_000 }).catch(() => {});
+				await dialog
+					.waitFor({ state: "detached", timeout: 10_000 })
+					.catch(() => {});
 			}
+		},
+		async waitForModelReady() {
+			// The composer only permits sending once a provider/model is selected.
+			// In password mode the App mounts after login, so wait for the model
+			// label to leave its "Select model" placeholder (i18n: en-US).
+			await this.page.waitForFunction(
+				() => {
+					const el = document.querySelector(".model-controls__model-label");
+					const text = (el?.textContent ?? "").trim();
+					return text.length > 0 && text !== "Select model";
+				},
+				null,
+				{ timeout: 30_000 },
+			);
+		},
+		async waitForTerminalControlsSettled(timeoutMs = 10_000) {
+			// The fire-and-forget terminal control calls must settle with 204 before
+			// teardown; this asserts the required 204 (not merely the absence of a
+			// failure) and makes the case deterministic without a fixed sleep.
+			const deadline = Date.now() + timeoutMs;
+			while (Date.now() < deadline) {
+				if (
+					terminalControl204s.appearance > 0 &&
+					terminalControl204s.resize > 0
+				) {
+					return { ...terminalControl204s };
+				}
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+			throw new Error(
+				`terminal control calls did not settle with 204: appearance=${terminalControl204s.appearance} resize=${terminalControl204s.resize}`,
+			);
 		},
 		async assertClean(options = {}) {
 			const allowResponses = options.allowResponses || [];
+			const allowConsoleErrors = options.allowConsoleErrors || [];
 			const o = this.observability;
 			const problems = [];
-			if (o.pageErrors.length) problems.push(`pageerror: ${o.pageErrors.join(" | ")}`);
-			if (o.consoleErrors.length) problems.push(`console.error: ${o.consoleErrors.join(" | ")}`);
-			if (o.requestFailures.length) problems.push(`requestfailed: ${o.requestFailures.join(" | ")}`);
-			const unexpected = o.unexpectedResponses.filter((u) => !allowResponses.some((a) => u.includes(a)));
-			if (unexpected.length) problems.push(`unexpected 4xx/5xx: ${unexpected.join(" | ")}`);
-			if (o.egressViolations.length) problems.push(`egress: ${o.egressViolations.join(" | ")}`);
+			if (o.pageErrors.length)
+				problems.push(`pageerror: ${o.pageErrors.join(" | ")}`);
+			const unexpectedConsoleErrors = o.consoleErrors.filter(
+				(e) => !allowConsoleErrors.some((a) => e.includes(a)),
+			);
+			if (unexpectedConsoleErrors.length)
+				problems.push(`console.error: ${unexpectedConsoleErrors.join(" | ")}`);
+			if (o.requestFailures.length)
+				problems.push(`requestfailed: ${o.requestFailures.join(" | ")}`);
+			const unexpected = o.unexpectedResponses.filter(
+				(u) => !allowResponses.some((a) => u.includes(a)),
+			);
+			if (unexpected.length)
+				problems.push(`unexpected 4xx/5xx: ${unexpected.join(" | ")}`);
+			if (o.egressViolations.length)
+				problems.push(`egress: ${o.egressViolations.join(" | ")}`);
 			if (problems.length) throw new Error(problems.join("; "));
 		},
 		async teardown() {
@@ -284,6 +404,9 @@ async function createHarness(options = {}) {
 				if (value === undefined) delete process.env[key];
 				else process.env[key] = value;
 			}
+			// Per-case fixture isolation: remove the throwaway temp tree (home /
+			// workspace / agent dir) so failed runs do not litter /tmp.
+			fs.rmSync(runRoot, { recursive: true, force: true });
 		},
 	};
 }
