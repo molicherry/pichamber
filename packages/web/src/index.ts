@@ -35,7 +35,11 @@ export interface PichamberServerOptions {
 	/** Tests may disable the native terminal surface; production defaults to enabled. */
 	terminal?: boolean;
 	/** E2E-only: hook that returns the HTTP status for the next prompt to fail with, or null. */
-	nextPromptFailure?: () => { status: number; message: string } | null;
+	nextPromptFailure?: () => {
+		status: number;
+		message: string;
+		marker?: boolean;
+	} | null;
 }
 
 export interface PichamberServerRuntime {

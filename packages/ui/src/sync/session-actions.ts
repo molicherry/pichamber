@@ -1436,18 +1436,25 @@ export async function optimisticSend(input: {
   } catch (error) {
     const status = getErrorStatus(error)
     const ambiguousFailure = isAmbiguousSendFailure(error)
-    const acceptedRecords = ambiguousFailure
+    const confirmation = ambiguousFailure
       ? await fetchRecentSendConfirmationRecords(input.sessionId, messageID, targetDirectory)
       : null
 
-    if (acceptedRecords) {
-      materializeConfirmedSendRecords(store, input.sessionId, messageID, acceptedRecords)
+    if (confirmation?.kind === "dispatched") {
+      materializeConfirmedSendRecords(store, input.sessionId, messageID, confirmation.records)
       optimisticConfirm?.({
         sessionID: input.sessionId,
         directory: targetDirectory,
         messageID,
       })
       return
+    }
+
+    // 确认重取已证明该消息从未派发：给回抛错误打上 promptNotDispatched 标记，
+    // 使 ChatInput 沿用与 server 端 prompt_not_dispatched 标记相同的恢复路径回填 composer。
+    // kind === "unknown"（重取本身失败）不打标记，避免重发可能已落地的提示。
+    if (confirmation?.kind === "not-dispatched" && error && typeof error === "object") {
+      ;(error as { promptNotDispatched?: boolean }).promptNotDispatched = true
     }
 
     // The rollback below makes the user's message disappear with no other
@@ -1506,11 +1513,16 @@ export async function optimisticSend(input: {
   }
 }
 
+type SendConfirmationResult =
+  | { kind: "dispatched"; records: Array<{ info: Message; parts?: Part[] }> }
+  | { kind: "not-dispatched" }
+  | { kind: "unknown" }
+
 async function fetchRecentSendConfirmationRecords(
   sessionId: string,
   messageID: string,
   directory?: string | null,
-): Promise<Array<{ info: Message; parts?: Part[] }> | null> {
+): Promise<SendConfirmationResult> {
   // Bounded: a connection that never returns must still let the send fail
   // rather than hang the composer.
   const reconnectDeadline = Date.now() + SEND_CONFIRMATION_RECONNECT_TIMEOUT_MS
@@ -1518,6 +1530,7 @@ async function fetchRecentSendConfirmationRecords(
     await wait(SEND_CONFIRMATION_RECONNECT_POLL_MS)
   }
 
+  let sawSuccessfulRefetch = false
   for (let attempt = 0; attempt < SEND_CONFIRMATION_REFETCH_ATTEMPTS; attempt += 1) {
     if (attempt > 0) await wait(SEND_CONFIRMATION_REFETCH_BASE_RETRY_MS * 2 ** (attempt - 1))
     try {
@@ -1528,14 +1541,15 @@ async function fetchRecentSendConfirmationRecords(
       })
       const records = (assertSdkSuccess(result, "session.messages") ?? [])
         .filter((record: { info?: { id?: string } }) => !!record?.info?.id) as Array<{ info: Message; parts?: Part[] }>
+      sawSuccessfulRefetch = true
       if (records.some((record) => record.info.id === messageID)) {
-        return records
+        return { kind: "dispatched", records }
       }
     } catch {
       // Confirmation is best-effort; if it fails, keep the original send error path.
     }
   }
-  return null
+  return sawSuccessfulRefetch ? { kind: "not-dispatched" } : { kind: "unknown" }
 }
 
 function materializeConfirmedSendRecords(

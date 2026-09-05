@@ -227,8 +227,8 @@ class DeterministicRegistry {
 	// HTTP-level prompt failure: the next POST /prompt(_async) returns `status`
 	// instead of dispatching. Consumed once by the web layer's prompt handler via
 	// takeNextPromptFailure.
-	failNextPrompt(status, message) {
-		this._failNextPrompt = { status, message };
+	failNextPrompt(status, message, options = {}) {
+		this._failNextPrompt = { status, message, marker: options.marker !== false };
 	}
 	takeNextPromptFailure() {
 		const failure = this._failNextPrompt;

@@ -247,7 +247,11 @@ export function createOpencodeRoutes(
 	registry: SessionRegistry,
 	options: {
 		/** E2E-only: hook that returns the HTTP status for the next prompt to fail with, or null. */
-		nextPromptFailure?: () => { status: number; message: string } | null;
+		nextPromptFailure?: () => {
+			status: number;
+			message: string;
+			marker?: boolean;
+		} | null;
 	} = {},
 ): void {
 	const router = Router();
@@ -367,19 +371,20 @@ export function createOpencodeRoutes(
 		// always dispatches and returns 204.
 		const failure = options.nextPromptFailure?.();
 		if (failure) {
-			// Definitely-not-dispatched contract. The fault is injected before
-			// pushUser()/client.prompt(), so the prompt never ran and the client may
-			// safely restore the user's unsent text. The marker is machine-readable
-			// (code + accepted:false + header) so the app-owned recovery wrapper can
-			// correlate it; ambiguous transport failures carry no marker and stay
-			// untouched. Production servers never pass this hook, so a normal
-			// /prompt_async still dispatches and returns 204.
-			res.setHeader("X-Pichamber-Prompt-Accepted", "false");
-			res.status(failure.status).json({
-				error: failure.message,
-				code: "prompt_not_dispatched",
-				accepted: false,
-			});
+			if (failure.marker === false) {
+				// Bare (marker-less) failure: the client cannot positively tell the
+				// prompt was rejected before dispatch, so it treats this as an ambiguous
+				// transport failure and relies on the confirmation refetch to decide
+				// whether to restore the composer.
+				res.status(failure.status).json({ error: failure.message });
+			} else {
+				res.setHeader("X-Pichamber-Prompt-Accepted", "false");
+				res.status(failure.status).json({
+					error: failure.message,
+					code: "prompt_not_dispatched",
+					accepted: false,
+				});
+			}
 			return;
 		}
 		rt.store.pushUser(text, messageID);
